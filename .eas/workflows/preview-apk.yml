@@ -1,0 +1,12 @@
+name: Preview APK for testing
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  android_preview_apk:
+    name: Build test APK
+    type: build
+    params:
+      platform: android
+      profile: preview
