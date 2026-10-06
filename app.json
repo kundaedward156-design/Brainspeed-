@@ -15,6 +15,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#0A1628"
     },
+    "updates": {
+      "url": "https://u.expo.dev/b845ebd3-bb3d-46b3-b194-a3f7720091d3"
+    },
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -47,6 +50,7 @@
     "plugins": [
       "expo-router",
       "expo-font",
+      "expo-asset",
       [
         "expo-build-properties",
         {
