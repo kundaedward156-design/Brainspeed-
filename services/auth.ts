@@ -63,18 +63,6 @@ export const authService = {
     if (error) return { user: null, error: error.message };
     if (!data.user) return { user: null, error: 'Unable to create account.' };
 
-    // Profile is normally created by DB trigger on auth.users insert.
-    // Fallback upsert if trigger is not yet installed.
-    const { error: profileError } = await supabase.from('profiles').upsert({
-      id: data.user.id,
-      full_name,
-      email,
-      role: 'player',
-    });
-    if (profileError) {
-      // Trigger may have already created the row
-    }
-
     const profile = await fetchProfile(data.user.id);
     return {
       user: profile,

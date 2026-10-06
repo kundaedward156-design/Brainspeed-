@@ -27,6 +27,8 @@ export default function CompetitionPlayScreen() {
   const [answeredAt, setAnsweredAt] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const questionStartedAt = useRef(Date.now());
+  const questionsRef = useRef<Question[]>([]);
+  const indexRef = useRef(0);
 
   const clearTimer = () => {
     if (timerRef.current) {
@@ -75,8 +77,13 @@ export default function CompetitionPlayScreen() {
           }
         });
       }
-      // Questions are loaded by competition/quiz pipeline once backend is wired
-      // setQuestion(...) from quiz question list
+      const qRes = await competitionsService.getCompetitionQuestions(competitionId);
+      questionsRef.current = qRes.data;
+      indexRef.current = 0;
+      if (qRes.data[0]) {
+        setQuestion(qRes.data[0]);
+        setQuestionIndex(0);
+      }
       setLoading(false);
     };
 
@@ -112,19 +119,20 @@ export default function CompetitionPlayScreen() {
 
     if (data) {
       setFeedback(data.is_correct ? 'correct' : 'wrong');
-      if (data.is_correct) {
-        setMyScore((s) => s + data.points_earned);
-      }
     }
 
-    // Advance or finish — real flow driven by backend question list
     setTimeout(() => {
-      if (competition?.status === 'completed') {
-        router.replace({
-          pathname: '/results/outcome',
-          params: { competitionId },
-        });
+      const next = indexRef.current + 1;
+      if (next < questionsRef.current.length) {
+        indexRef.current = next;
+        setQuestionIndex(next);
+        setQuestion(questionsRef.current[next]);
+        return;
       }
+      router.replace({
+        pathname: '/results/outcome',
+        params: { competitionId },
+      });
     }, 900);
   };
 

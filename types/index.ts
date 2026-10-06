@@ -35,7 +35,8 @@ export interface Question {
   text: string;
   image_url: string | null;
   options: string[];
-  correct_index: number;
+  /** Admin writes this; player RPC rows omit it. Correctness comes from answers.is_correct. */
+  correct_index?: number;
   difficulty: 'easy' | 'medium' | 'hard';
   time_limit_sec: number;
   points: number;

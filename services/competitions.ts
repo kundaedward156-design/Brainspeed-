@@ -1,62 +1,51 @@
-import type { Competition, Answer, CompetitionResult } from '@/types';
+import type { Competition, Answer, CompetitionResult, Question } from '@/types';
 import { supabase } from '@/services/supabase';
+
+function asQuestionRows(data: unknown): Question[] {
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  return rows.map((row) => {
+    const r = row as Record<string, unknown>;
+    const rawOptions = r.options;
+    const options = Array.isArray(rawOptions)
+      ? rawOptions.map((o) => String(o))
+      : [];
+    return {
+      id: String(r.id ?? ''),
+      category_id: String(r.category_id ?? ''),
+      text: String(r.text ?? ''),
+      image_url: (r.image_url as string | null) ?? null,
+      options,
+      difficulty: (r.difficulty as Question['difficulty']) ?? 'medium',
+      time_limit_sec: Number(r.time_limit_sec ?? 15),
+      points: Number(r.points ?? 10),
+      is_active: r.is_active == null ? true : Boolean(r.is_active),
+      created_at: String(r.created_at ?? ''),
+    };
+  });
+}
 
 export const competitionsService = {
   async findOrCreateMatch(
     quizId: string
   ): Promise<{ data: Competition | null; error: string | null }> {
     if (!supabase) return { data: null, error: 'Not connected' };
-    const { data: session } = await supabase.auth.getSession();
-    const userId = session.session?.user?.id;
-    if (!userId) return { data: null, error: 'Please log in first.' };
+    const { data, error } = await supabase.rpc('find_or_create_match', {
+      p_quiz_id: quizId,
+    });
+    if (error) return { data: null, error: error.message };
+    const row = Array.isArray(data) ? data[0] : data;
+    return { data: (row as Competition) ?? null, error: null };
+  },
 
-    // Prefer joining an open waiting match for this quiz
-    const { data: waiting } = await supabase
-      .from('competitions')
-      .select('*')
-      .eq('quiz_id', quizId)
-      .eq('status', 'waiting')
-      .is('player2_id', null)
-      .neq('player1_id', userId)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (waiting) {
-      const { data, error } = await supabase
-        .from('competitions')
-        .update({ player2_id: userId, status: 'matched' })
-        .eq('id', waiting.id)
-        .select()
-        .maybeSingle();
-      return { data: (data as Competition) ?? null, error: error?.message ?? null };
-    }
-
-    const { data: quiz } = await supabase
-      .from('quizzes')
-      .select('entry_fee_zmw')
-      .eq('id', quizId)
-      .maybeSingle();
-    const entry = Number(quiz?.entry_fee_zmw ?? 22);
-    const platform = Math.round(entry * 2 * 0.0909 * 100) / 100;
-    const prize = entry * 2 - platform;
-
-    const { data, error } = await supabase
-      .from('competitions')
-      .insert({
-        quiz_id: quizId,
-        player1_id: userId,
-        status: 'waiting',
-        entry_fee_zmw: entry,
-        platform_fee_zmw: platform,
-        prize_zmw: prize,
-        player1_score: 0,
-        player2_score: 0,
-      })
-      .select()
-      .maybeSingle();
-
-    return { data: (data as Competition) ?? null, error: error?.message ?? null };
+  async getCompetitionQuestions(
+    competitionId: string
+  ): Promise<{ data: Question[]; error: string | null }> {
+    if (!supabase) return { data: [], error: 'Not connected' };
+    const { data, error } = await supabase.rpc('get_competition_questions', {
+      p_competition_id: competitionId,
+    });
+    if (error) return { data: [], error: error.message };
+    return { data: asQuestionRows(data), error: null };
   },
 
   async getById(id: string): Promise<{ data: Competition | null; error: string | null }> {
@@ -76,7 +65,6 @@ export const competitionsService = {
     const userId = session.session?.user?.id;
     if (!userId) return { data: null, error: 'Please log in first.' };
 
-    // Prefer secure RPC in production; direct insert allowed if RLS + trigger scores
     const { data, error } = await supabase
       .from('answers')
       .insert({
@@ -168,7 +156,7 @@ export const competitionsService = {
       )
       .subscribe();
     return () => {
-      supabase.removeChannel(channel);
+      supabase?.removeChannel(channel);
     };
   },
 };
