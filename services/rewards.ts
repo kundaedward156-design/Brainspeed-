@@ -1,23 +1,16 @@
-import type { Reward, RewardTransaction } from '@/types';
+import type { Reward } from '@/types';
 import { supabase } from '@/services/supabase';
 
-export interface RewardPayload {
-  title: string;
-  description?: string | null;
-  amount_zmw: number;
-  is_active?: boolean;
-  imageUri?: string | null;
-}
-
-async function uploadIfNeeded(imageUri?: string | null): Promise<string | null> {
-  if (!imageUri || !supabase) return null;
+async function uploadRewardImage(imageUri: string): Promise<string> {
+  if (!supabase) throw new Error('Not connected');
   if (imageUri.startsWith('http')) return imageUri;
-  const ext = imageUri.split('.').pop()?.toLowerCase() || 'jpg';
+  const ext = imageUri.split('.').pop()?.toLowerCase()?.split('?')[0] || 'jpg';
   const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
   const response = await fetch(imageUri);
   const blob = await response.blob();
+  const contentType = blob.type || `image/${ext === 'png' ? 'png' : 'jpeg'}`;
   const { error } = await supabase.storage.from('rewards').upload(path, blob, {
-    contentType: blob.type || 'image/jpeg',
+    contentType,
     upsert: false,
   });
   if (error) throw new Error(error.message);
@@ -26,49 +19,41 @@ async function uploadIfNeeded(imageUri?: string | null): Promise<string | null> 
 }
 
 export const rewardsService = {
-  async listAvailable(): Promise<{ data: Reward[]; error: string | null }> {
+  async listPublished(): Promise<{ data: Reward[]; error: string | null }> {
     if (!supabase) return { data: [], error: null };
     const { data, error } = await supabase
       .from('rewards')
       .select('*')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
+      .eq('published', true)
+      .order('amount_zmw', { ascending: false });
     return { data: (data as Reward[]) ?? [], error: error?.message ?? null };
   },
 
-  async getBalance(userId: string): Promise<{ balance_zmw: number; error: string | null }> {
-    if (!supabase || !userId) return { balance_zmw: 0, error: null };
+  async listAll(): Promise<{ data: Reward[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
     const { data, error } = await supabase
-      .from('profiles')
-      .select('balance_zmw')
-      .eq('id', userId)
-      .maybeSingle();
-    return { balance_zmw: Number(data?.balance_zmw ?? 0), error: error?.message ?? null };
-  },
-
-  async getHistory(userId: string): Promise<{ data: RewardTransaction[]; error: string | null }> {
-    if (!supabase || !userId) return { data: [], error: null };
-    const { data, error } = await supabase
-      .from('reward_transactions')
+      .from('rewards')
       .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(50);
-    return { data: (data as RewardTransaction[]) ?? [], error: error?.message ?? null };
+      .order('amount_zmw', { ascending: false });
+    return { data: (data as Reward[]) ?? [], error: error?.message ?? null };
   },
 
-  async create(payload: RewardPayload): Promise<{ data: Reward | null; error: string | null }> {
+  async create(payload: {
+    title: string;
+    amount_zmw: number;
+    imageUri?: string | null;
+    published?: boolean;
+  }): Promise<{ data: Reward | null; error: string | null }> {
     if (!supabase) return { data: null, error: 'Not connected' };
     try {
-      const image_url = await uploadIfNeeded(payload.imageUri);
+      const image_url = payload.imageUri ? await uploadRewardImage(payload.imageUri) : null;
       const { data, error } = await supabase
         .from('rewards')
         .insert({
           title: payload.title,
-          description: payload.description ?? null,
           amount_zmw: payload.amount_zmw,
-          is_active: payload.is_active ?? true,
           image_url,
+          published: payload.published ?? true,
         })
         .select()
         .maybeSingle();
@@ -80,13 +65,20 @@ export const rewardsService = {
 
   async update(
     id: string,
-    payload: Partial<RewardPayload>
+    payload: Partial<{
+      title: string;
+      amount_zmw: number;
+      imageUri: string | null;
+      published: boolean;
+    }>
   ): Promise<{ data: Reward | null; error: string | null }> {
     if (!supabase) return { data: null, error: 'Not connected' };
     try {
-      const patch: Record<string, unknown> = { ...payload };
-      delete patch.imageUri;
-      if (payload.imageUri) patch.image_url = await uploadIfNeeded(payload.imageUri);
+      const patch: Record<string, unknown> = {};
+      if (payload.title !== undefined) patch.title = payload.title;
+      if (payload.amount_zmw !== undefined) patch.amount_zmw = payload.amount_zmw;
+      if (payload.published !== undefined) patch.published = payload.published;
+      if (payload.imageUri) patch.image_url = await uploadRewardImage(payload.imageUri);
       const { data, error } = await supabase
         .from('rewards')
         .update(patch)
@@ -99,15 +91,19 @@ export const rewardsService = {
     }
   },
 
-  async uploadImage(
-    localUri: string,
-    _fileName: string
-  ): Promise<{ publicUrl: string | null; error: string | null }> {
-    try {
-      const url = await uploadIfNeeded(localUri);
-      return { publicUrl: url, error: null };
-    } catch (e: any) {
-      return { publicUrl: null, error: e?.message ?? 'Upload failed' };
-    }
+  async remove(id: string): Promise<{ error: string | null }> {
+    if (!supabase) return { error: 'Not connected' };
+    const { error } = await supabase.from('rewards').delete().eq('id', id);
+    return { error: error?.message ?? null };
+  },
+
+  async getBalance(userId: string): Promise<{ balance_zmw: number; error: string | null }> {
+    if (!supabase || !userId) return { balance_zmw: 0, error: null };
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('balance_zmw')
+      .eq('id', userId)
+      .maybeSingle();
+    return { balance_zmw: Number(data?.balance_zmw ?? 0), error: error?.message ?? null };
   },
 };

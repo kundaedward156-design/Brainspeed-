@@ -1,203 +1,223 @@
 /**
- * Home — light UI; all lists from Supabase services
+ * Home — banners + competitions list
  */
-import React, { useCallback, useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
-import { useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Image,
+  RefreshControl,
+  ScrollView,
+  Dimensions,
+} from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '@/components/ui/Screen';
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
+import { LoadingState } from '@/components/ui/LoadingState';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { PromoBanner } from '@/components/home/PromoBanner';
-import { SectionHeader } from '@/components/home/SectionHeader';
-import { Colors, Spacing, Typography, BorderRadius } from '@/constants/theme';
-import { AppConfig } from '@/constants/config';
-import { categoriesService } from '@/services/categories';
-import { quizzesService } from '@/services/quizzes';
-import { competitionsService } from '@/services/competitions';
+import { Colors, Spacing, Typography, BorderRadius, Shadows } from '@/constants/theme';
 import { bannersService } from '@/services/banners';
-import { rewardsService } from '@/services/rewards';
-import { authService } from '@/services/auth';
-import type { Category, Quiz, Competition, Banner, Profile } from '@/types';
+import { competitionsService } from '@/services/competitions';
+import { useAuth } from '@/contexts/AuthContext';
+import type { Banner, Competition } from '@/types';
+
+const WIDTH = Dimensions.get('window').width;
 
 export default function HomeScreen() {
   const router = useRouter();
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const { profile } = useAuth();
   const [banners, setBanners] = useState<Banner[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [featured, setFeatured] = useState<Quiz[]>([]);
-  const [recent, setRecent] = useState<Competition[]>([]);
-  const [balance, setBalance] = useState(0);
+  const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(true);
+  const [bannerIndex, setBannerIndex] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const profileRes = await authService.getCurrentProfile();
-      const userId = profileRes.profile?.id ?? '';
-      const [banRes, catRes, featRes, recentRes, balRes] = await Promise.all([
-        bannersService.listActive(),
-        categoriesService.listActive(),
-        quizzesService.listFeatured(),
-        competitionsService.listRecent(userId),
-        rewardsService.getBalance(userId),
-      ]);
-      setProfile(profileRes.profile);
-      setBanners(banRes.data);
-      setCategories(catRes.data);
-      setFeatured(featRes.data);
-      setRecent(recentRes.data);
-      setBalance(balRes.balance_zmw);
-    } finally {
-      setLoading(false);
-    }
+    const [b, c] = await Promise.all([
+      bannersService.listActive(),
+      competitionsService.listActive(),
+    ]);
+    setBanners(b.data);
+    setCompetitions(c.data);
+    setLoading(false);
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
-  const firstName = profile?.full_name?.split(' ')[0];
+  if (loading) {
+    return (
+      <Screen>
+        <LoadingState message="Loading…" />
+      </Screen>
+    );
+  }
 
   return (
-    <Screen scroll contentStyle={styles.content}>
-      <View style={styles.topBar}>
+    <Screen
+      scroll
+      contentStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.gold} />}
+    >
+      <View style={styles.headerRow}>
         <View>
-          <Text style={styles.greeting}>Hello{firstName ? ',' : ''}</Text>
-          <Text style={styles.userName}>{firstName ?? 'Welcome'}</Text>
+          <Text style={styles.hello}>Hello{profile?.full_name ? `, ${profile.full_name.split(' ')[0]}` : ''}</Text>
+          <Text style={styles.sub}>Pick a quiz and compete</Text>
         </View>
-        <View style={styles.topActions}>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push('/notifications')}>
-            <Ionicons name="notifications-outline" size={24} color={Colors.text} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push('/(tabs)/profile')}>
-            <Ionicons name="person-circle-outline" size={28} color={Colors.text} />
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity onPress={() => router.push('/notifications')} style={styles.bell}>
+          <Ionicons name="notifications-outline" size={22} color={Colors.text} />
+        </TouchableOpacity>
       </View>
 
-      <PromoBanner banners={banners} loading={loading} />
-
-      <Card style={styles.competeCard}>
-        <Text style={styles.competeTitle}>Compete Now</Text>
-        <Text style={styles.competeSub}>
-          Match with an opponent and battle for {AppConfig.currencySymbol} rewards.
-        </Text>
-        <Button
-          title="Start Match"
-          onPress={() => router.push('/(tabs)/compete')}
-          size="md"
-          style={{ marginTop: Spacing.md }}
-        />
-      </Card>
-
-      <SectionHeader title="Categories" />
-      {categories.length === 0 ? (
-        <EmptyState icon="grid-outline" title="No categories yet" message="New categories will show up here." />
-      ) : (
-        <View style={styles.categoryRow}>
-          {categories.map((c) => (
-            <Card key={c.id} style={styles.categoryCard} onPress={() => router.push('/(tabs)/compete')}>
-              {c.image_url ? (
-                <Image source={{ uri: c.image_url }} style={styles.catImg} />
+      {banners.length > 0 ? (
+        <ScrollView
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onMomentumScrollEnd={(e) => {
+            const i = Math.round(e.nativeEvent.contentOffset.x / (WIDTH - Spacing.xxl * 2));
+            setBannerIndex(i);
+          }}
+          style={styles.bannerScroll}
+        >
+          {banners.map((b) => (
+            <View key={b.id} style={styles.bannerCard}>
+              {b.image_url ? (
+                <Image source={{ uri: b.image_url }} style={styles.bannerImage} resizeMode="cover" />
               ) : (
-                <View style={styles.catPlaceholder}>
-                  <Ionicons name="grid" size={22} color={Colors.blue} />
+                <View style={[styles.bannerImage, styles.bannerPlaceholder]}>
+                  <Text style={styles.bannerTitle}>{b.title}</Text>
                 </View>
               )}
-              <Text style={styles.categoryName} numberOfLines={1}>{c.name}</Text>
-            </Card>
+              <View style={styles.bannerOverlay}>
+                <Text style={styles.bannerTitle} numberOfLines={2}>{b.title}</Text>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      ) : null}
+      {banners.length > 1 ? (
+        <View style={styles.dots}>
+          {banners.map((_, i) => (
+            <View key={i} style={[styles.dot, i === bannerIndex && styles.dotActive]} />
           ))}
         </View>
-      )}
+      ) : null}
 
-      <SectionHeader title="Featured Quizzes" />
-      {featured.length === 0 ? (
-        <EmptyState icon="star-outline" title="No featured quizzes" message="Featured matches will show up here." />
+      <Text style={styles.section}>Competitions</Text>
+      {competitions.length === 0 ? (
+        <EmptyState
+          icon="flash-outline"
+          title="No competitions yet"
+          message="Check back soon for new quizzes."
+        />
       ) : (
-        featured.map((q) => (
-          <Card key={q.id} style={{ marginBottom: Spacing.md }} onPress={() => router.push('/(tabs)/compete')}>
-            <Text style={styles.quizTitle}>{q.title}</Text>
-            <Text style={styles.quizMeta}>
-              {AppConfig.currencySymbol}{q.entry_fee_zmw} · {q.question_count} questions
-            </Text>
-          </Card>
+        competitions.map((c) => (
+          <TouchableOpacity
+            key={c.id}
+            style={styles.compCard}
+            activeOpacity={0.85}
+            onPress={() => router.push(`/competition/${c.id}`)}
+          >
+            <View style={styles.compIcon}>
+              <Ionicons name="flash" size={22} color={Colors.goldDark} />
+            </View>
+            <View style={styles.compText}>
+              <Text style={styles.compTitle} numberOfLines={2}>{c.title}</Text>
+              <Text style={styles.compMeta}>
+                {c.reward != null ? `Reward: ${c.reward}` : 'Quiz competition'}
+                {c.category?.name ? ` · ${c.category.name}` : ''}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+          </TouchableOpacity>
         ))
       )}
-
-      <SectionHeader title="Recent Competitions" />
-      {recent.length === 0 ? (
-        <EmptyState icon="time-outline" title="No matches yet" message="Your recent competitions will appear here." />
-      ) : (
-        recent.map((c) => (
-          <Card key={c.id} style={{ marginBottom: Spacing.md }}>
-            <Text style={styles.quizTitle}>{c.status === 'completed' ? 'Completed' : c.status.replace('_', ' ')}</Text>
-            <Text style={styles.quizMeta}>Score {c.player1_score} – {c.player2_score}</Text>
-          </Card>
-        ))
-      )}
-
-      <SectionHeader title="Rewards" actionLabel="See all" onAction={() => router.push('/(tabs)/rewards')} />
-      <Card style={styles.rewardPreview} onPress={() => router.push('/(tabs)/rewards')}>
-        <View style={styles.walletIcon}>
-          <Ionicons name="wallet" size={24} color={Colors.goldDark} />
-        </View>
-        <View style={{ marginLeft: Spacing.md, flex: 1 }}>
-          <Text style={styles.rewardLabel}>Your balance</Text>
-          <Text style={styles.rewardValue}>
-            {AppConfig.currencySymbol} {balance.toFixed(2)}
-          </Text>
-        </View>
-        <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
-      </Card>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
   content: { paddingTop: Spacing.lg },
-  topBar: {
+  headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: Spacing.xl,
   },
-  greeting: { color: Colors.textSecondary, fontSize: Typography.size.sm },
-  userName: { color: Colors.text, fontSize: Typography.size.xl, fontWeight: '700' },
-  topActions: { flexDirection: 'row', alignItems: 'center' },
-  iconBtn: { padding: Spacing.sm },
-  competeCard: { marginBottom: Spacing.xl },
-  competeTitle: { color: Colors.text, fontSize: Typography.size.xl, fontWeight: '700' },
-  competeSub: { color: Colors.textSecondary, fontSize: Typography.size.sm, marginTop: 4 },
-  categoryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md, marginBottom: Spacing.lg },
-  categoryCard: { width: '47%', minHeight: 88 },
-  catImg: { width: 40, height: 40, borderRadius: 10, marginBottom: Spacing.sm },
-  catPlaceholder: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: Colors.blueMuted,
+  hello: { color: Colors.text, fontSize: Typography.size.xxl, fontWeight: '800' },
+  sub: { color: Colors.textSecondary, fontSize: Typography.size.sm, marginTop: 2 },
+  bell: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
-  categoryName: { color: Colors.text, fontWeight: '600' },
-  quizTitle: { color: Colors.text, fontWeight: '600' },
-  quizMeta: { color: Colors.textSecondary, fontSize: Typography.size.sm, marginTop: 4 },
-  rewardPreview: {
+  bannerScroll: { marginBottom: Spacing.sm },
+  bannerCard: {
+    width: WIDTH - Spacing.xxl * 2,
+    height: 150,
+    borderRadius: BorderRadius.lg,
+    overflow: 'hidden',
+    marginRight: Spacing.md,
+    backgroundColor: Colors.navy,
+    ...Shadows.card,
+  },
+  bannerImage: { width: '100%', height: '100%' },
+  bannerPlaceholder: {
+    backgroundColor: Colors.navyLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.lg,
+  },
+  bannerOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: Spacing.md,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  bannerTitle: { color: Colors.white, fontWeight: '700', fontSize: Typography.size.md },
+  dots: { flexDirection: 'row', justifyContent: 'center', gap: 6, marginBottom: Spacing.lg },
+  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.borderStrong },
+  dotActive: { backgroundColor: Colors.gold, width: 16 },
+  section: {
+    color: Colors.text,
+    fontSize: Typography.size.lg,
+    fontWeight: '700',
+    marginBottom: Spacing.md,
+  },
+  compCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: Spacing.xxl,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.lg,
+    marginBottom: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadows.soft,
   },
-  walletIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+  compIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.goldMuted,
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: Spacing.md,
   },
-  rewardLabel: { color: Colors.textSecondary, fontSize: Typography.size.sm },
-  rewardValue: { color: Colors.text, fontSize: Typography.size.xxl, fontWeight: '800' },
+  compText: { flex: 1 },
+  compTitle: { color: Colors.text, fontWeight: '700', fontSize: Typography.size.md },
+  compMeta: { color: Colors.textSecondary, fontSize: Typography.size.xs, marginTop: 3 },
 });

@@ -6,7 +6,7 @@ export default function CompetitionLayout() {
     <Stack
       screenOptions={{
         headerShown: false,
-        contentStyle: { backgroundColor: Colors.navy },
+        contentStyle: { backgroundColor: Colors.background },
       }}
     />
   );

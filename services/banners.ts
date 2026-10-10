@@ -1,27 +1,16 @@
 import type { Banner } from '@/types';
 import { supabase } from '@/services/supabase';
 
-export interface BannerPayload {
-  title: string;
-  description?: string | null;
-  button_text?: string | null;
-  destination?: string | null;
-  priority?: number;
-  starts_at?: string | null;
-  ends_at?: string | null;
-  is_active?: boolean;
-  imageUri?: string | null;
-}
-
-async function uploadIfNeeded(imageUri?: string | null): Promise<string | null> {
-  if (!imageUri || !supabase) return null;
+async function uploadBannerImage(imageUri: string): Promise<string> {
+  if (!supabase) throw new Error('Not connected');
   if (imageUri.startsWith('http')) return imageUri;
-  const ext = imageUri.split('.').pop()?.toLowerCase() || 'jpg';
+  const ext = imageUri.split('.').pop()?.toLowerCase()?.split('?')[0] || 'jpg';
   const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
   const response = await fetch(imageUri);
   const blob = await response.blob();
+  const contentType = blob.type || `image/${ext === 'png' ? 'png' : 'jpeg'}`;
   const { error } = await supabase.storage.from('banners').upload(path, blob, {
-    contentType: blob.type || 'image/jpeg',
+    contentType,
     upsert: false,
   });
   if (error) throw new Error(error.message);
@@ -32,36 +21,41 @@ async function uploadIfNeeded(imageUri?: string | null): Promise<string | null> 
 export const bannersService = {
   async listActive(): Promise<{ data: Banner[]; error: string | null }> {
     if (!supabase) return { data: [], error: null };
-    const now = new Date().toISOString();
     const { data, error } = await supabase
       .from('banners')
       .select('*')
-      .eq('is_active', true)
-      .order('priority', { ascending: true });
-    const filtered = ((data as Banner[]) ?? []).filter((b) => {
-      if (b.starts_at && b.starts_at > now) return false;
-      if (b.ends_at && b.ends_at < now) return false;
-      return true;
-    });
-    return { data: filtered, error: error?.message ?? null };
+      .eq('active', true)
+      .order('sort_order', { ascending: true });
+    return { data: (data as Banner[]) ?? [], error: error?.message ?? null };
   },
 
-  async create(payload: BannerPayload): Promise<{ data: Banner | null; error: string | null }> {
+  async listAll(): Promise<{ data: Banner[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    const { data, error } = await supabase
+      .from('banners')
+      .select('*')
+      .order('sort_order', { ascending: true });
+    return { data: (data as Banner[]) ?? [], error: error?.message ?? null };
+  },
+
+  async create(payload: {
+    title: string;
+    imageUri?: string | null;
+    link_url?: string | null;
+    sort_order?: number;
+    active?: boolean;
+  }): Promise<{ data: Banner | null; error: string | null }> {
     if (!supabase) return { data: null, error: 'Not connected' };
     try {
-      const image_url = await uploadIfNeeded(payload.imageUri);
+      const image_url = payload.imageUri ? await uploadBannerImage(payload.imageUri) : null;
       const { data, error } = await supabase
         .from('banners')
         .insert({
           title: payload.title,
-          description: payload.description ?? null,
-          button_text: payload.button_text ?? null,
-          destination: payload.destination ?? null,
-          priority: payload.priority ?? 0,
-          starts_at: payload.starts_at ?? null,
-          ends_at: payload.ends_at ?? null,
-          is_active: payload.is_active ?? true,
           image_url,
+          link_url: payload.link_url ?? null,
+          sort_order: payload.sort_order ?? 0,
+          active: payload.active ?? true,
         })
         .select()
         .maybeSingle();
@@ -73,15 +67,22 @@ export const bannersService = {
 
   async update(
     id: string,
-    payload: Partial<BannerPayload>
+    payload: Partial<{
+      title: string;
+      imageUri: string | null;
+      link_url: string | null;
+      sort_order: number;
+      active: boolean;
+    }>
   ): Promise<{ data: Banner | null; error: string | null }> {
     if (!supabase) return { data: null, error: 'Not connected' };
     try {
-      const patch: Record<string, unknown> = { ...payload };
-      delete patch.imageUri;
-      if (payload.imageUri) {
-        patch.image_url = await uploadIfNeeded(payload.imageUri);
-      }
+      const patch: Record<string, unknown> = {};
+      if (payload.title !== undefined) patch.title = payload.title;
+      if (payload.link_url !== undefined) patch.link_url = payload.link_url;
+      if (payload.sort_order !== undefined) patch.sort_order = payload.sort_order;
+      if (payload.active !== undefined) patch.active = payload.active;
+      if (payload.imageUri) patch.image_url = await uploadBannerImage(payload.imageUri);
       const { data, error } = await supabase
         .from('banners')
         .update(patch)
@@ -94,21 +95,9 @@ export const bannersService = {
     }
   },
 
-  async deactivate(id: string): Promise<{ error: string | null }> {
+  async remove(id: string): Promise<{ error: string | null }> {
     if (!supabase) return { error: 'Not connected' };
-    const { error } = await supabase.from('banners').update({ is_active: false }).eq('id', id);
+    const { error } = await supabase.from('banners').delete().eq('id', id);
     return { error: error?.message ?? null };
-  },
-
-  async uploadImage(
-    localUri: string,
-    _fileName: string
-  ): Promise<{ publicUrl: string | null; error: string | null }> {
-    try {
-      const url = await uploadIfNeeded(localUri);
-      return { publicUrl: url, error: null };
-    } catch (e: any) {
-      return { publicUrl: null, error: e?.message ?? 'Upload failed' };
-    }
   },
 };

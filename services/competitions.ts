@@ -1,162 +1,256 @@
-import type { Competition, Answer, CompetitionResult, Question } from '@/types';
+import type { Competition, CompetitionEntry, LeaderboardRow, QuizQuestion } from '@/types';
 import { supabase } from '@/services/supabase';
 
-function asQuestionRows(data: unknown): Question[] {
-  const rows = Array.isArray(data) ? data : data ? [data] : [];
-  return rows.map((row) => {
-    const r = row as Record<string, unknown>;
-    const rawOptions = r.options;
-    const options = Array.isArray(rawOptions)
-      ? rawOptions.map((o) => String(o))
-      : [];
-    return {
-      id: String(r.id ?? ''),
-      category_id: String(r.category_id ?? ''),
-      text: String(r.text ?? ''),
-      image_url: (r.image_url as string | null) ?? null,
-      options,
-      difficulty: (r.difficulty as Question['difficulty']) ?? 'medium',
-      time_limit_sec: Number(r.time_limit_sec ?? 15),
-      points: Number(r.points ?? 10),
-      is_active: r.is_active == null ? true : Boolean(r.is_active),
-      created_at: String(r.created_at ?? ''),
-    };
-  });
+function normalizeOptions(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((o) => String(o));
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map((o) => String(o));
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
 }
 
 export const competitionsService = {
-  async findOrCreateMatch(
-    quizId: string
-  ): Promise<{ data: Competition | null; error: string | null }> {
-    if (!supabase) return { data: null, error: 'Not connected' };
-    const { data, error } = await supabase.rpc('find_or_create_match', {
-      p_quiz_id: quizId,
-    });
-    if (error) return { data: null, error: error.message };
-    const row = Array.isArray(data) ? data[0] : data;
-    return { data: (row as Competition) ?? null, error: null };
+  async listActive(): Promise<{ data: Competition[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    const { data, error } = await supabase
+      .from('competitions')
+      .select('*, category:categories(*)')
+      .order('starts_at', { ascending: false });
+    return { data: (data as Competition[]) ?? [], error: error?.message ?? null };
   },
 
-  async getCompetitionQuestions(
-    competitionId: string
-  ): Promise<{ data: Question[]; error: string | null }> {
-    if (!supabase) return { data: [], error: 'Not connected' };
-    const { data, error } = await supabase.rpc('get_competition_questions', {
-      p_competition_id: competitionId,
-    });
-    if (error) return { data: [], error: error.message };
-    return { data: asQuestionRows(data), error: null };
+  async listAll(): Promise<{ data: Competition[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    const { data, error } = await supabase
+      .from('competitions')
+      .select('*, category:categories(*)')
+      .order('starts_at', { ascending: false });
+    return { data: (data as Competition[]) ?? [], error: error?.message ?? null };
   },
 
   async getById(id: string): Promise<{ data: Competition | null; error: string | null }> {
     if (!supabase) return { data: null, error: null };
-    const { data, error } = await supabase.from('competitions').select('*').eq('id', id).maybeSingle();
+    const { data, error } = await supabase
+      .from('competitions')
+      .select('*, category:categories(*)')
+      .eq('id', id)
+      .maybeSingle();
     return { data: (data as Competition) ?? null, error: error?.message ?? null };
+  },
+
+  async create(payload: {
+    title: string;
+    reward?: number | string | null;
+    starts_at?: string | null;
+    ends_at?: string | null;
+    category_id?: string | null;
+  }): Promise<{ data: Competition | null; error: string | null }> {
+    if (!supabase) return { data: null, error: 'Not connected' };
+    const { data, error } = await supabase
+      .from('competitions')
+      .insert({
+        title: payload.title,
+        reward: payload.reward ?? null,
+        starts_at: payload.starts_at ?? null,
+        ends_at: payload.ends_at ?? null,
+        category_id: payload.category_id ?? null,
+      })
+      .select()
+      .maybeSingle();
+    return { data: (data as Competition) ?? null, error: error?.message ?? null };
+  },
+
+  async update(
+    id: string,
+    payload: Partial<{
+      title: string;
+      reward: number | string | null;
+      starts_at: string | null;
+      ends_at: string | null;
+      category_id: string | null;
+    }>
+  ): Promise<{ data: Competition | null; error: string | null }> {
+    if (!supabase) return { data: null, error: 'Not connected' };
+    const { data, error } = await supabase
+      .from('competitions')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .maybeSingle();
+    return { data: (data as Competition) ?? null, error: error?.message ?? null };
+  },
+
+  async remove(id: string): Promise<{ error: string | null }> {
+    if (!supabase) return { error: 'Not connected' };
+    const { error } = await supabase.from('competitions').delete().eq('id', id);
+    return { error: error?.message ?? null };
+  },
+
+  async join(competitionId: string): Promise<{ error: string | null }> {
+    if (!supabase) return { error: 'Not connected' };
+    const { error } = await supabase.rpc('join_competition', {
+      p_competition_id: competitionId,
+    });
+    return { error: error?.message ?? null };
   },
 
   async submitAnswer(
     competitionId: string,
     questionId: string,
-    selectedIndex: number | null,
-    timeTakenMs: number
-  ): Promise<{ data: Answer | null; error: string | null }> {
-    if (!supabase) return { data: null, error: 'Not connected' };
-    const { data: session } = await supabase.auth.getSession();
-    const userId = session.session?.user?.id;
-    if (!userId) return { data: null, error: 'Please log in first.' };
-
-    const { data, error } = await supabase
-      .from('answers')
-      .insert({
-        competition_id: competitionId,
-        player_id: userId,
-        question_id: questionId,
-        selected_index: selectedIndex,
-        time_taken_ms: timeTakenMs,
-      })
-      .select()
-      .maybeSingle();
-
-    return { data: (data as Answer) ?? null, error: error?.message ?? null };
+    answer: string
+  ): Promise<{ correct: boolean | null; error: string | null }> {
+    if (!supabase) return { correct: null, error: 'Not connected' };
+    const { data, error } = await supabase.rpc('submit_answer', {
+      p_competition_id: competitionId,
+      p_question_id: questionId,
+      p_answer: answer,
+    });
+    if (error) return { correct: null, error: error.message };
+    return { correct: Boolean(data), error: null };
   },
 
-  async getResult(
+  async getLeaderboard(
+    competitionId: string,
+    limit = 20
+  ): Promise<{ data: LeaderboardRow[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    const { data, error } = await supabase.rpc('get_leaderboard', {
+      p_competition_id: competitionId,
+      p_limit: limit,
+    });
+    if (error) return { data: [], error: error.message };
+    return { data: (data as LeaderboardRow[]) ?? [], error: null };
+  },
+
+  async listQuestions(
     competitionId: string
-  ): Promise<{ data: CompetitionResult | null; error: string | null }> {
-    if (!supabase) return { data: null, error: null };
-    const { data: session } = await supabase.auth.getSession();
-    const userId = session.session?.user?.id;
-    if (!userId) return { data: null, error: null };
-
-    const { data: c, error } = await supabase
-      .from('competitions')
-      .select('*')
-      .eq('id', competitionId)
-      .maybeSingle();
-    if (error || !c) return { data: null, error: error?.message ?? null };
-
-    const isP1 = c.player1_id === userId;
-    const myScore = isP1 ? c.player1_score : c.player2_score;
-    const opponentScore = isP1 ? c.player2_score : c.player1_score;
-    const isWinner = c.winner_id === userId;
-
-    const { data: answers } = await supabase
-      .from('answers')
-      .select('*')
+  ): Promise<{ data: QuizQuestion[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    const { data, error } = await supabase
+      .from('quiz_questions')
+      .select('id, competition_id, question, options, position')
       .eq('competition_id', competitionId)
-      .eq('player_id', userId);
+      .order('position', { ascending: true });
+    const rows = (data ?? []).map((r: Record<string, unknown>) => ({
+      id: String(r.id),
+      competition_id: String(r.competition_id),
+      question: String(r.question ?? ''),
+      options: normalizeOptions(r.options),
+      position: Number(r.position ?? 0),
+    }));
+    return { data: rows, error: error?.message ?? null };
+  },
 
-    const list = answers ?? [];
-    const correct = list.filter((a: Answer) => a.is_correct).length;
-    const incorrect = list.filter((a: Answer) => !a.is_correct).length;
-    const avg =
-      list.length > 0
-        ? list.reduce((s: number, a: Answer) => s + (a.time_taken_ms || 0), 0) / list.length
-        : 0;
+  async addQuestion(payload: {
+    competition_id: string;
+    question: string;
+    options: string[];
+    position: number;
+    correct_answer: string;
+  }): Promise<{ data: QuizQuestion | null; error: string | null }> {
+    if (!supabase) return { data: null, error: 'Not connected' };
+    if (!payload.options.includes(payload.correct_answer)) {
+      return { data: null, error: 'Correct answer must exactly match one option.' };
+    }
+    const { data: q, error: qErr } = await supabase
+      .from('quiz_questions')
+      .insert({
+        competition_id: payload.competition_id,
+        question: payload.question,
+        options: payload.options,
+        position: payload.position,
+      })
+      .select('id, competition_id, question, options, position')
+      .maybeSingle();
+    if (qErr || !q) return { data: null, error: qErr?.message ?? 'Failed to add question' };
+
+    const { error: keyErr } = await supabase.from('quiz_answer_key').insert({
+      question_id: q.id,
+      correct_answer: payload.correct_answer,
+    });
+    if (keyErr) {
+      // best-effort cleanup
+      await supabase.from('quiz_questions').delete().eq('id', q.id);
+      return { data: null, error: keyErr.message };
+    }
 
     return {
       data: {
-        competition_id: competitionId,
-        is_winner: Boolean(isWinner),
-        my_score: myScore ?? 0,
-        opponent_score: opponentScore ?? 0,
-        correct_count: correct,
-        incorrect_count: incorrect,
-        avg_speed_ms: avg,
-        prize_zmw: isWinner ? Number(c.prize_zmw ?? 0) : 0,
+        id: String(q.id),
+        competition_id: String(q.competition_id),
+        question: String(q.question ?? ''),
+        options: normalizeOptions(q.options),
+        position: Number(q.position ?? 0),
       },
       error: null,
     };
   },
 
-  async listRecent(
-    userId: string,
-    limit = 10
-  ): Promise<{ data: Competition[]; error: string | null }> {
-    if (!supabase || !userId) return { data: [], error: null };
-    const { data, error } = await supabase
-      .from('competitions')
-      .select('*')
-      .or(`player1_id.eq.${userId},player2_id.eq.${userId}`)
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    return { data: (data as Competition[]) ?? [], error: error?.message ?? null };
+  async updateQuestion(
+    id: string,
+    payload: {
+      question?: string;
+      options?: string[];
+      position?: number;
+      correct_answer?: string;
+    }
+  ): Promise<{ error: string | null }> {
+    if (!supabase) return { error: 'Not connected' };
+    const patch: Record<string, unknown> = {};
+    if (payload.question !== undefined) patch.question = payload.question;
+    if (payload.options !== undefined) patch.options = payload.options;
+    if (payload.position !== undefined) patch.position = payload.position;
+    if (Object.keys(patch).length) {
+      const { error } = await supabase.from('quiz_questions').update(patch).eq('id', id);
+      if (error) return { error: error.message };
+    }
+    if (payload.correct_answer !== undefined) {
+      if (payload.options && !payload.options.includes(payload.correct_answer)) {
+        return { error: 'Correct answer must exactly match one option.' };
+      }
+      const { error } = await supabase
+        .from('quiz_answer_key')
+        .upsert({ question_id: id, correct_answer: payload.correct_answer });
+      if (error) return { error: error.message };
+    }
+    return { error: null };
   },
 
-  subscribeToCompetition(id: string, onUpdate: (c: Competition) => void): () => void {
-    if (!supabase) return () => {};
-    const channel = supabase
-      .channel(`competition:${id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'competitions', filter: `id=eq.${id}` },
-        (payload) => {
-          if (payload.new) onUpdate(payload.new as Competition);
-        }
-      )
-      .subscribe();
-    return () => {
-      supabase?.removeChannel(channel);
-    };
+  async deleteQuestion(id: string): Promise<{ error: string | null }> {
+    if (!supabase) return { error: 'Not connected' };
+    await supabase.from('quiz_answer_key').delete().eq('question_id', id);
+    const { error } = await supabase.from('quiz_questions').delete().eq('id', id);
+    return { error: error?.message ?? null };
+  },
+
+  async listEntries(
+    competitionId: string
+  ): Promise<{ data: CompetitionEntry[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    const { data, error } = await supabase
+      .from('competition_entries')
+      .select('competition_id, user_id, score, profiles(full_name, email)')
+      .eq('competition_id', competitionId)
+      .order('score', { ascending: false });
+    return { data: (data as CompetitionEntry[]) ?? [], error: error?.message ?? null };
+  },
+
+  async getMyEntry(
+    competitionId: string,
+    userId: string
+  ): Promise<{ data: CompetitionEntry | null; error: string | null }> {
+    if (!supabase || !userId) return { data: null, error: null };
+    const { data, error } = await supabase
+      .from('competition_entries')
+      .select('competition_id, user_id, score')
+      .eq('competition_id', competitionId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    return { data: (data as CompetitionEntry) ?? null, error: error?.message ?? null };
   },
 };

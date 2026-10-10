@@ -3,10 +3,6 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 
-/**
- * Admin uses a cooler, more utilitarian variant of the brand
- * Still navy/gold but denser layout for management
- */
 export default function AdminLayout() {
   return (
     <Tabs
@@ -58,6 +54,16 @@ export default function AdminLayout() {
           tabBarIcon: ({ color, size }) => <Ionicons name="grid-outline" size={size} color={color} />,
         }}
       />
+      {/* Hidden sub-screens */}
+      <Tabs.Screen name="categories" options={{ href: null }} />
+      <Tabs.Screen name="quizzes" options={{ href: null }} />
+      <Tabs.Screen name="questions" options={{ href: null }} />
+      <Tabs.Screen name="banners-manage" options={{ href: null }} />
+      <Tabs.Screen name="rewards-manage" options={{ href: null }} />
+      <Tabs.Screen name="entries" options={{ href: null }} />
+      <Tabs.Screen name="settings-rules" options={{ href: null }} />
+      <Tabs.Screen name="settings-scoring" options={{ href: null }} />
+      <Tabs.Screen name="settings-maintenance" options={{ href: null }} />
     </Tabs>
   );
 }

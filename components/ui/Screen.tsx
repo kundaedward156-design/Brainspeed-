@@ -7,6 +7,7 @@ import {
   StatusBar,
   KeyboardAvoidingView,
   Platform,
+  RefreshControlProps,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing } from '@/constants/theme';
@@ -18,8 +19,8 @@ interface ScreenProps {
   contentStyle?: ViewStyle;
   edges?: ('top' | 'bottom' | 'left' | 'right')[];
   keyboardAvoid?: boolean;
-  /** dark = splash/navy; light = main app (default) */
   theme?: 'light' | 'dark';
+  refreshControl?: React.ReactElement<RefreshControlProps>;
 }
 
 export function Screen({
@@ -30,6 +31,7 @@ export function Screen({
   edges = ['top', 'bottom'],
   keyboardAvoid = false,
   theme = 'light',
+  refreshControl,
 }: ScreenProps) {
   const bg = theme === 'dark' ? Colors.navy : Colors.background;
   const bar = theme === 'dark' ? 'light-content' : 'dark-content';
@@ -39,6 +41,7 @@ export function Screen({
       contentContainerStyle={[styles.scrollContent, contentStyle]}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
+      refreshControl={refreshControl}
     >
       {children}
     </ScrollView>

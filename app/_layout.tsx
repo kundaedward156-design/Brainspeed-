@@ -35,6 +35,7 @@ export default function RootLayout() {
           <Stack.Screen name="notifications" options={{ presentation: 'modal' }} />
           <Stack.Screen name="settings" />
           <Stack.Screen name="deposit" />
+          <Stack.Screen name="maintenance" />
         </Stack>
       </AuthProvider>
     </GestureHandlerRootView>

@@ -1,33 +1,38 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '@/components/ui/Screen';
 import { Header } from '@/components/ui/Header';
 import { Card } from '@/components/ui/Card';
 import { Colors, Spacing, Typography } from '@/constants/theme';
 import { authService } from '@/services/auth';
+import { adminService } from '@/services/admin';
 import type { Profile } from '@/types';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const load = useCallback(async () => {
     const { profile: p } = await authService.getCurrentProfile();
     setProfile(p);
+    const admin = await adminService.isAdmin();
+    setIsAdmin(admin);
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   const name = profile?.full_name ?? 'Your profile';
   const email = profile?.email ?? '—';
   const wins = profile?.wins ?? 0;
   const losses = profile?.losses ?? 0;
   const totalScore = profile?.total_score ?? 0;
-  const isAdmin = profile?.role === 'admin';
 
   return (
     <Screen scroll>
@@ -122,8 +127,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    paddingHorizontal: Spacing.sm,
+    gap: Spacing.md,
   },
-  menuLabel: { flex: 1, color: Colors.text, fontSize: Typography.size.md, marginLeft: Spacing.md },
+  menuLabel: { flex: 1, color: Colors.text, fontWeight: '600' },
 });

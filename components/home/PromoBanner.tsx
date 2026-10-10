@@ -27,7 +27,7 @@ interface PromoBannerProps {
 }
 
 export function PromoBanner({ banners = [], loading, onPress }: PromoBannerProps) {
-  const active = banners.filter((b) => b.is_active);
+  const active = banners.filter((b) => b.active);
   const [index, setIndex] = useState(0);
   const fade = useRef(new Animated.Value(1)).current;
 

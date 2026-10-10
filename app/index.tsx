@@ -27,6 +27,24 @@ export default function SplashScreen() {
       try {
         const { profile } = await authService.getCurrentProfile();
         if (!mounted) return;
+
+        // Maintenance mode (non-admins only)
+        try {
+          const { settingsService } = await import('@/services/settings');
+          const { adminService } = await import('@/services/admin');
+          const maint = await settingsService.getMaintenance();
+          const isAdmin = await adminService.isAdmin();
+          if (maint.data.enabled && !isAdmin) {
+            router.replace({
+              pathname: '/maintenance',
+              params: { message: maint.data.message || '' },
+            });
+            return;
+          }
+        } catch {
+          /* ignore maintenance check failures */
+        }
+
         if (profile) {
           router.replace('/(tabs)');
           return;
