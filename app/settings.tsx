@@ -8,9 +8,11 @@ import {
   Switch,
   Linking,
   TouchableOpacity,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '@/components/ui/Screen';
 import { Header } from '@/components/ui/Header';
 import { Button } from '@/components/ui/Button';
@@ -18,11 +20,14 @@ import { Card } from '@/components/ui/Card';
 import { Colors, Spacing, Typography, BorderRadius } from '@/constants/theme';
 import { authService } from '@/services/auth';
 import { profilesService } from '@/services/profiles';
+import { uploadImageToBucket } from '@/services/storage';
 import { supabase } from '@/services/supabase';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Profile } from '@/types';
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const { refresh } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -30,6 +35,7 @@ export default function SettingsScreen() {
   const [confirm, setConfirm] = useState('');
   const [push, setPush] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
 
   useEffect(() => {
     authService.getCurrentProfile().then(({ profile: p }) => {
@@ -37,6 +43,7 @@ export default function SettingsScreen() {
       setName(p?.full_name || '');
       setEmail(p?.email || '');
       setPush(p?.push_enabled !== false);
+      setAvatarUri(p?.avatar_url || null);
     });
   }, []);
 
@@ -46,32 +53,39 @@ export default function SettingsScreen() {
     const { error } = await profilesService.update(profile.id, { full_name: name.trim() });
     setSaving(false);
     if (error) Alert.alert('Error', error);
-    else Alert.alert('Saved', 'Profile updated.');
+    else {
+      await refresh();
+      Alert.alert('Saved', 'Profile updated.');
+    }
   };
 
   const pickAvatar = async () => {
-    if (!profile?.id || !supabase) return;
+    if (!profile?.id) return;
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Allow photo library access to change your avatar.');
+      return;
+    }
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.8,
+      quality: 0.85,
+      allowsEditing: true,
+      aspect: [1, 1],
     });
     if (res.canceled || !res.assets[0]?.uri) return;
+
+    const localUri = res.assets[0].uri;
+    setAvatarUri(localUri);
     setSaving(true);
     try {
-      const uri = res.assets[0].uri;
-      const ext = uri.split('.').pop()?.split('?')[0] || 'jpg';
-      const path = `avatars/${profile.id}.${ext}`;
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const { error: upErr } = await supabase.storage.from('banners').upload(path, blob, {
-        contentType: blob.type || 'image/jpeg',
-        upsert: true,
-      });
-      if (upErr) throw new Error(upErr.message);
-      const { data } = supabase.storage.from('banners').getPublicUrl(path);
-      const { error } = await profilesService.update(profile.id, { avatar_url: data.publicUrl });
+      // Upload to public banners bucket under avatars/ folder (or rewards if preferred)
+      const publicUrl = await uploadImageToBucket('banners', localUri, 'avatars');
+      const { error } = await profilesService.update(profile.id, { avatar_url: publicUrl });
       if (error) throw new Error(error);
-      Alert.alert('Saved', 'Avatar updated.');
+      setAvatarUri(publicUrl);
+      setProfile((p) => (p ? { ...p, avatar_url: publicUrl } : p));
+      await refresh();
+      Alert.alert('Saved', 'Profile photo updated.');
     } catch (e: any) {
       Alert.alert('Upload failed', e?.message ?? 'Could not upload avatar');
     } finally {
@@ -124,12 +138,36 @@ export default function SettingsScreen() {
     <Screen scroll contentStyle={{ paddingTop: Spacing.sm }}>
       <Header title="Settings" showBack />
 
+      <Text style={styles.section}>Profile photo</Text>
+      <Card style={styles.card}>
+        <View style={styles.avatarRow}>
+          <View style={styles.avatar}>
+            {avatarUri ? (
+              <Image source={{ uri: avatarUri }} style={styles.avatarImg} />
+            ) : (
+              <Ionicons name="person" size={40} color={Colors.textMuted} />
+            )}
+          </View>
+          <Button
+            title={avatarUri ? 'Change photo' : 'Upload photo'}
+            variant="outline"
+            size="sm"
+            onPress={pickAvatar}
+            loading={saving}
+          />
+        </View>
+      </Card>
+
       <Text style={styles.section}>Profile</Text>
       <Card style={styles.card}>
         <Text style={styles.label}>Full name</Text>
-        <TextInput style={styles.input} value={name} onChangeText={setName} placeholderTextColor={Colors.textMuted} />
-        <Button title="Save profile" onPress={saveProfile} loading={saving} fullWidth style={{ marginBottom: Spacing.sm }} />
-        <Button title="Change avatar" variant="outline" onPress={pickAvatar} fullWidth />
+        <TextInput
+          style={styles.input}
+          value={name}
+          onChangeText={setName}
+          placeholderTextColor={Colors.textMuted}
+        />
+        <Button title="Save profile" onPress={saveProfile} loading={saving} fullWidth />
       </Card>
 
       <Text style={styles.section}>Email</Text>
@@ -181,7 +219,13 @@ export default function SettingsScreen() {
         <LinkRow label="Privacy Policy" onPress={() => Linking.openURL('https://brainspeed.app/privacy')} />
       </Card>
 
-      <Button title="Log out" variant="danger" onPress={logout} fullWidth style={{ marginVertical: Spacing.xl }} />
+      <Button
+        title="Log out"
+        variant="danger"
+        onPress={logout}
+        fullWidth
+        style={{ marginVertical: Spacing.xl }}
+      />
     </Screen>
   );
 }
@@ -214,4 +258,17 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  avatarRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  avatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: Colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  avatarImg: { width: '100%', height: '100%' },
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,19 +8,22 @@ import { Card } from '@/components/ui/Card';
 import { Colors, Spacing, Typography } from '@/constants/theme';
 import { authService } from '@/services/auth';
 import { adminService } from '@/services/admin';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Profile } from '@/types';
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const { profile: ctxProfile, refresh } = useAuth();
+  const [profile, setProfile] = useState<Profile | null>(ctxProfile);
   const [isAdmin, setIsAdmin] = useState(false);
 
   const load = useCallback(async () => {
+    await refresh();
     const { profile: p } = await authService.getCurrentProfile();
     setProfile(p);
     const admin = await adminService.isAdmin();
     setIsAdmin(admin);
-  }, []);
+  }, [refresh]);
 
   useFocusEffect(
     useCallback(() => {
@@ -33,6 +36,7 @@ export default function ProfileScreen() {
   const wins = profile?.wins ?? 0;
   const losses = profile?.losses ?? 0;
   const totalScore = profile?.total_score ?? 0;
+  const avatarUrl = profile?.avatar_url || null;
 
   return (
     <Screen scroll>
@@ -46,15 +50,24 @@ export default function ProfileScreen() {
       />
 
       <View style={styles.avatarBlock}>
-        <View style={styles.avatar}>
-          {profile?.avatar_url ? (
-            <Image source={{ uri: profile.avatar_url }} style={styles.avatarImg} />
+        <TouchableOpacity style={styles.avatar} onPress={() => router.push('/settings')} activeOpacity={0.85}>
+          {avatarUrl ? (
+            <Image
+              source={{ uri: avatarUrl }}
+              style={styles.avatarImg}
+              key={avatarUrl}
+            />
           ) : (
             <Ionicons name="person" size={48} color={Colors.textMuted} />
           )}
-        </View>
+        </TouchableOpacity>
         <Text style={styles.name}>{name}</Text>
         <Text style={styles.email}>{email}</Text>
+        <TouchableOpacity onPress={() => router.push('/settings')}>
+          <Text style={styles.changePhoto}>
+            {avatarUrl ? 'Change photo' : 'Add profile photo'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.statsRow}>
@@ -118,6 +131,12 @@ const styles = StyleSheet.create({
   avatarImg: { width: '100%', height: '100%' },
   name: { color: Colors.text, fontSize: Typography.size.xxl, fontWeight: '700' },
   email: { color: Colors.textSecondary, marginTop: 4 },
+  changePhoto: {
+    color: Colors.goldDark,
+    fontWeight: '700',
+    marginTop: Spacing.sm,
+    fontSize: Typography.size.sm,
+  },
   statsRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xl },
   statCard: { flex: 1, alignItems: 'center', paddingVertical: Spacing.lg },
   statValue: { color: Colors.goldDark, fontSize: Typography.size.xxl, fontWeight: '800' },
