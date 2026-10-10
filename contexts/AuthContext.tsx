@@ -28,14 +28,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
+
     (async () => {
+      // Restore persisted session from AsyncStorage on app open
       await refresh();
       if (mounted) setLoading(false);
     })();
 
-    if (!supabase) return () => { mounted = false; };
+    if (!supabase) {
+      return () => {
+        mounted = false;
+      };
+    }
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async () => {
+    // Keep profile in sync on login / logout / token refresh
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event) => {
+      if (event === 'SIGNED_OUT') {
+        if (mounted) setProfile(null);
+        return;
+      }
       await refresh();
     });
 
