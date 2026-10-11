@@ -51,12 +51,15 @@ export async function uploadImageToBucket(
     throw new Error('Image file is empty. Try another photo.');
   }
 
+  // Convert to Blob for better compatibility with Supabase JS on React Native
+  const blob = new Blob([arrayBuffer], { type: contentType });
+
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
   const path = folder ? `${folder}/${fileName}` : fileName;
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, arrayBuffer, {
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, blob, {
     contentType,
-    upsert: false,
+    upsert: true,
   });
 
   if (uploadError) {
