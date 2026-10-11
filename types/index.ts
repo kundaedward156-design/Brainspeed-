@@ -29,11 +29,22 @@ export interface Category {
 
 export interface Competition {
   id: string;
-  title: string;
+  quiz_id?: string | null;
+  player1_id?: string | null;
+  player2_id?: string | null;
+  status?: string;
+  player1_score?: number;
+  player2_score?: number;
+  winner_id?: string | null;
+  entry_fee_zmw?: number;
+  platform_fee_zmw?: number;
+  prize_zmw?: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at?: string;
+  // legacy fields for compatibility
+  title?: string;
   reward?: number | string | null;
-  starts_at?: string | null;
-  ends_at?: string | null;
-  category_id?: string | null;
   category?: Category | null;
 }
 
@@ -126,6 +137,11 @@ export interface Question {
 
 export interface Quiz {
   id: string;
-  title?: string;
-  [key: string]: unknown;
+  title: string;
+  category_id?: string | null;
+  question_ids?: string[];
+  question_count?: number;
+  entry_fee_zmw?: number;
+  is_active?: boolean;
+  created_at?: string;
 }

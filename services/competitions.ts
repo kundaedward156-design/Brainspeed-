@@ -1,4 +1,4 @@
-import type { Competition, CompetitionEntry, LeaderboardRow, QuizQuestion } from '@/types';
+import type { Competition, QuizQuestion } from '@/types';
 import { supabase } from '@/services/supabase';
 
 function normalizeOptions(raw: unknown): string[] {
@@ -15,242 +15,159 @@ function normalizeOptions(raw: unknown): string[] {
 }
 
 export const competitionsService = {
-  async listActive(): Promise<{ data: Competition[]; error: string | null }> {
+  /** List quizzes the current user has not yet completed */
+  async listAvailableQuizzes(userId: string): Promise<{ data: any[]; error: string | null }> {
     if (!supabase) return { data: [], error: null };
-    const { data, error } = await supabase
+    const { data: quizzes, error } = await supabase
+      .from('quizzes')
+      .select('*')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+    if (error) return { data: [], error: error.message };
+
+    // Exclude quizzes the user already finished
+    const { data: played } = await supabase
       .from('competitions')
-      .select('*, category:categories(*)')
-      .order('starts_at', { ascending: false });
-    return { data: (data as Competition[]) ?? [], error: error?.message ?? null };
+      .select('quiz_id')
+      .or(`player1_id.eq.${userId},player2_id.eq.${userId}`)
+      .in('status', ['completed', 'finished']);
+
+    const playedIds = new Set((played || []).map((p: any) => p.quiz_id));
+    const available = (quizzes || []).filter((q: any) => !playedIds.has(q.id));
+    return { data: available, error: null };
   },
 
-  async listAll(): Promise<{ data: Competition[]; error: string | null }> {
-    if (!supabase) return { data: [], error: null };
-    const { data, error } = await supabase
+  /** Find a waiting competition for the quiz or create one as player1 */
+  async findOrCreateMatch(quizId: string, userId: string, entryFee: number): Promise<{ data: Competition | null; error: string | null }> {
+    if (!supabase) return { data: null, error: 'Not connected' };
+
+    // Check balance
+    const { data: profile } = await supabase.from('profiles').select('balance_zmw').eq('id', userId).single();
+    if (!profile || Number(profile.balance_zmw) < entryFee) {
+      return { data: null, error: 'Insufficient balance. Deposit funds first.' };
+    }
+
+    // Look for waiting competition (player2 null)
+    const { data: waiting } = await supabase
       .from('competitions')
-      .select('*, category:categories(*)')
-      .order('starts_at', { ascending: false });
-    return { data: (data as Competition[]) ?? [], error: error?.message ?? null };
+      .select('*')
+      .eq('quiz_id', quizId)
+      .eq('status', 'waiting')
+      .is('player2_id', null)
+      .neq('player1_id', userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (waiting) {
+      // Join as player2 and deduct fee
+      const { error: joinErr } = await supabase
+        .from('competitions')
+        .update({ player2_id: userId, status: 'active', started_at: new Date().toISOString() })
+        .eq('id', waiting.id);
+      if (joinErr) return { data: null, error: joinErr.message };
+
+      // Deduct both fees (simplified – in production use Edge Function)
+      await supabase.rpc('deduct_balance', { uid: userId, amount: entryFee }).catch(() => {});
+      return { data: { ...waiting, player2_id: userId, status: 'active' }, error: null };
+    }
+
+    // Create new as player1
+    const { data: created, error } = await supabase
+      .from('competitions')
+      .insert({
+        quiz_id: quizId,
+        player1_id: userId,
+        status: 'waiting',
+        entry_fee_zmw: entryFee,
+        prize_zmw: entryFee * 2 - 4, // simple platform fee
+      })
+      .select()
+      .single();
+    if (error) return { data: null, error: error.message };
+
+    await supabase.rpc('deduct_balance', { uid: userId, amount: entryFee }).catch(() => {});
+    return { data: created as Competition, error: null };
   },
 
   async getById(id: string): Promise<{ data: Competition | null; error: string | null }> {
     if (!supabase) return { data: null, error: null };
-    const { data, error } = await supabase
-      .from('competitions')
-      .select('*, category:categories(*)')
-      .eq('id', id)
-      .maybeSingle();
-    return { data: (data as Competition) ?? null, error: error?.message ?? null };
+    const { data, error } = await supabase.from('competitions').select('*').eq('id', id).maybeSingle();
+    return { data: data as Competition, error: error?.message ?? null };
   },
 
-  async create(payload: {
-    title: string;
-    reward?: number | string | null;
-    starts_at?: string | null;
-    ends_at?: string | null;
-    category_id?: string | null;
-  }): Promise<{ data: Competition | null; error: string | null }> {
-    if (!supabase) return { data: null, error: 'Not connected' };
-    const { data, error } = await supabase
-      .from('competitions')
-      .insert({
-        title: payload.title,
-        reward: payload.reward ?? null,
-        starts_at: payload.starts_at ?? null,
-        ends_at: payload.ends_at ?? null,
-        category_id: payload.category_id ?? null,
-      })
-      .select()
-      .maybeSingle();
-    return { data: (data as Competition) ?? null, error: error?.message ?? null };
-  },
-
-  async update(
-    id: string,
-    payload: Partial<{
-      title: string;
-      reward: number | string | null;
-      starts_at: string | null;
-      ends_at: string | null;
-      category_id: string | null;
-    }>
-  ): Promise<{ data: Competition | null; error: string | null }> {
-    if (!supabase) return { data: null, error: 'Not connected' };
-    const { data, error } = await supabase
-      .from('competitions')
-      .update(payload)
-      .eq('id', id)
-      .select()
-      .maybeSingle();
-    return { data: (data as Competition) ?? null, error: error?.message ?? null };
-  },
-
-  async remove(id: string): Promise<{ error: string | null }> {
-    if (!supabase) return { error: 'Not connected' };
-    const { error } = await supabase.from('competitions').delete().eq('id', id);
-    return { error: error?.message ?? null };
-  },
-
-  async join(competitionId: string): Promise<{ error: string | null }> {
-    if (!supabase) return { error: 'Not connected' };
-    const { error } = await supabase.rpc('join_competition', {
-      p_competition_id: competitionId,
-    });
-    return { error: error?.message ?? null };
-  },
-
-  async submitAnswer(
-    competitionId: string,
-    questionId: string,
-    answer: string
-  ): Promise<{ correct: boolean | null; error: string | null }> {
-    if (!supabase) return { correct: null, error: 'Not connected' };
-    const { data, error } = await supabase.rpc('submit_answer', {
-      p_competition_id: competitionId,
-      p_question_id: questionId,
-      p_answer: answer,
-    });
-    if (error) return { correct: null, error: error.message };
-    return { correct: Boolean(data), error: null };
-  },
-
-  async getLeaderboard(
-    competitionId: string,
-    limit = 20
-  ): Promise<{ data: LeaderboardRow[]; error: string | null }> {
+  /** Load questions for a competition via its quiz */
+  async listQuestions(competitionId: string): Promise<{ data: QuizQuestion[]; error: string | null }> {
     if (!supabase) return { data: [], error: null };
-    const { data, error } = await supabase.rpc('get_leaderboard', {
-      p_competition_id: competitionId,
-      p_limit: limit,
-    });
-    if (error) return { data: [], error: error.message };
-    return { data: (data as LeaderboardRow[]) ?? [], error: null };
-  },
+    const { data: comp } = await supabase.from('competitions').select('quiz_id').eq('id', competitionId).single();
+    if (!comp?.quiz_id) return { data: [], error: 'No quiz linked' };
 
-  async listQuestions(
-    competitionId: string
-  ): Promise<{ data: QuizQuestion[]; error: string | null }> {
-    if (!supabase) return { data: [], error: null };
-    const { data, error } = await supabase
-      .from('quiz_questions')
-      .select('id, competition_id, question, options, position')
-      .eq('competition_id', competitionId)
-      .order('position', { ascending: true });
-    const rows = (data ?? []).map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      competition_id: String(r.competition_id),
-      question: String(r.question ?? ''),
+    const { data: quiz } = await supabase.from('quizzes').select('question_ids').eq('id', comp.quiz_id).single();
+    const ids = quiz?.question_ids || [];
+    if (!ids.length) return { data: [], error: null };
+
+    const { data: qs, error } = await supabase
+      .from('questions')
+      .select('id, text, options, correct_index')
+      .in('id', ids);
+    const rows = (qs || []).map((r: any, i: number) => ({
+      id: r.id,
+      competition_id: competitionId,
+      question: r.text || '',
       options: normalizeOptions(r.options),
-      position: Number(r.position ?? 0),
+      position: i,
     }));
     return { data: rows, error: error?.message ?? null };
   },
 
-  async addQuestion(payload: {
-    competition_id: string;
-    question: string;
-    options: string[];
-    position: number;
-    correct_answer: string;
-  }): Promise<{ data: QuizQuestion | null; error: string | null }> {
-    if (!supabase) return { data: null, error: 'Not connected' };
-    if (!payload.options.includes(payload.correct_answer)) {
-      return { data: null, error: 'Correct answer must exactly match one option.' };
-    }
-    const { data: q, error: qErr } = await supabase
-      .from('quiz_questions')
-      .insert({
-        competition_id: payload.competition_id,
-        question: payload.question,
-        options: payload.options,
-        position: payload.position,
-      })
-      .select('id, competition_id, question, options, position')
-      .maybeSingle();
-    if (qErr || !q) return { data: null, error: qErr?.message ?? 'Failed to add question' };
+  async submitAnswer(competitionId: string, questionId: string, selectedIndex: number, userId: string): Promise<{ correct: boolean; error: string | null }> {
+    if (!supabase) return { correct: false, error: 'Not connected' };
+    const { data: q } = await supabase.from('questions').select('correct_index').eq('id', questionId).single();
+    const correct = q?.correct_index === selectedIndex;
+    const points = correct ? 1 : 0;
 
-    const { error: keyErr } = await supabase.from('quiz_answer_key').insert({
-      question_id: q.id,
-      correct_answer: payload.correct_answer,
+    await supabase.from('answers').insert({
+      competition_id: competitionId,
+      player_id: userId,
+      question_id: questionId,
+      selected_index: selectedIndex,
+      is_correct: correct,
+      points_earned: points,
     });
-    if (keyErr) {
-      // best-effort cleanup
-      await supabase.from('quiz_questions').delete().eq('id', q.id);
-      return { data: null, error: keyErr.message };
-    }
 
-    return {
-      data: {
-        id: String(q.id),
-        competition_id: String(q.competition_id),
-        question: String(q.question ?? ''),
-        options: normalizeOptions(q.options),
-        position: Number(q.position ?? 0),
-      },
-      error: null,
-    };
+    return { correct, error: null };
   },
 
-  async updateQuestion(
-    id: string,
-    payload: {
-      question?: string;
-      options?: string[];
-      position?: number;
-      correct_answer?: string;
-    }
-  ): Promise<{ error: string | null }> {
+  async finishCompetition(competitionId: string, userId: string, finalScore: number): Promise<{ error: string | null }> {
     if (!supabase) return { error: 'Not connected' };
-    const patch: Record<string, unknown> = {};
-    if (payload.question !== undefined) patch.question = payload.question;
-    if (payload.options !== undefined) patch.options = payload.options;
-    if (payload.position !== undefined) patch.position = payload.position;
-    if (Object.keys(patch).length) {
-      const { error } = await supabase.from('quiz_questions').update(patch).eq('id', id);
-      if (error) return { error: error.message };
-    }
-    if (payload.correct_answer !== undefined) {
-      if (payload.options && !payload.options.includes(payload.correct_answer)) {
-        return { error: 'Correct answer must exactly match one option.' };
+    const { data: comp } = await supabase.from('competitions').select('*').eq('id', competitionId).single();
+    if (!comp) return { error: 'Competition not found' };
+
+    const isP1 = comp.player1_id === userId;
+    const update: any = isP1 ? { player1_score: finalScore } : { player2_score: finalScore };
+
+    // If both scores present, determine winner
+    const p1 = isP1 ? finalScore : (comp.player1_score || 0);
+    const p2 = !isP1 ? finalScore : (comp.player2_score || 0);
+    if (comp.player1_id && comp.player2_id && (isP1 ? comp.player2_score != null : comp.player1_score != null)) {
+      update.status = 'completed';
+      update.completed_at = new Date().toISOString();
+      if (p1 > p2) update.winner_id = comp.player1_id;
+      else if (p2 > p1) update.winner_id = comp.player2_id;
+      // award prize to winner (simplified)
+      if (update.winner_id) {
+        const prize = Number(comp.prize_zmw || 0);
+        await supabase.rpc('credit_balance', { uid: update.winner_id, amount: prize }).catch(() => {});
+        // create notification
+        await supabase.from('notifications').insert({
+          user_id: update.winner_id,
+          title: 'You won!',
+          body: `You won the quiz and received K${prize}.`,
+          type: 'win',
+        });
       }
-      const { error } = await supabase
-        .from('quiz_answer_key')
-        .upsert({ question_id: id, correct_answer: payload.correct_answer });
-      if (error) return { error: error.message };
     }
+
+    await supabase.from('competitions').update(update).eq('id', competitionId);
     return { error: null };
-  },
-
-  async deleteQuestion(id: string): Promise<{ error: string | null }> {
-    if (!supabase) return { error: 'Not connected' };
-    await supabase.from('quiz_answer_key').delete().eq('question_id', id);
-    const { error } = await supabase.from('quiz_questions').delete().eq('id', id);
-    return { error: error?.message ?? null };
-  },
-
-  async listEntries(
-    competitionId: string
-  ): Promise<{ data: CompetitionEntry[]; error: string | null }> {
-    if (!supabase) return { data: [], error: null };
-    const { data, error } = await supabase
-      .from('competition_entries')
-      .select('competition_id, user_id, score, profiles(full_name, email)')
-      .eq('competition_id', competitionId)
-      .order('score', { ascending: false });
-    return { data: (data as CompetitionEntry[]) ?? [], error: error?.message ?? null };
-  },
-
-  async getMyEntry(
-    competitionId: string,
-    userId: string
-  ): Promise<{ data: CompetitionEntry | null; error: string | null }> {
-    if (!supabase || !userId) return { data: null, error: null };
-    const { data, error } = await supabase
-      .from('competition_entries')
-      .select('competition_id, user_id, score')
-      .eq('competition_id', competitionId)
-      .eq('user_id', userId)
-      .maybeSingle();
-    return { data: (data as CompetitionEntry) ?? null, error: error?.message ?? null };
   },
 };

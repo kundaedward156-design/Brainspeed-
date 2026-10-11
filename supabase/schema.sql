@@ -231,3 +231,13 @@ create policy "settings_read" on public.app_settings for select using (true);
 create policy "settings_admin" on public.app_settings for all using (public.is_admin());
 
 -- Storage buckets (run in dashboard or via API): banners, rewards — public read
+
+
+-- Optional helpers (run if you want client-side balance updates)
+-- create or replace function public.deduct_balance(uid uuid, amount numeric) returns void language plpgsql security definer as $$
+-- begin update public.profiles set balance_zmw = balance_zmw - amount where id = uid and balance_zmw >= amount; end; $$;
+-- create or replace function public.credit_balance(uid uuid, amount numeric) returns void language plpgsql security definer as $$
+-- begin update public.profiles set balance_zmw = balance_zmw + amount where id = uid; end; $$;
+
+-- Optional: alter table public.profiles add column if not exists push_token text;
+

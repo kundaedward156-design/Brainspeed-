@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { Profile } from '@/types';
 import { authService } from '@/services/auth';
+import { registerForPushNotifications } from '@/services/push';
 import { supabase } from '@/services/supabase';
 
 interface AuthContextValue {
@@ -24,6 +25,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refresh = useCallback(async () => {
     const { profile: p } = await authService.getCurrentProfile();
     setProfile(p);
+      if (p?.id) registerForPushNotifications(p.id).catch(() => {});
   }, []);
 
   useEffect(() => {

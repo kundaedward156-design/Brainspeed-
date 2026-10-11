@@ -8,19 +8,27 @@ import { LoadingState } from '@/components/ui/LoadingState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Colors, Spacing, Typography, BorderRadius, Shadows } from '@/constants/theme';
 import { quizzesService } from '@/services/quizzes';
+import { competitionsService } from '@/services/competitions';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Quiz } from '@/types';
 
 export default function CompeteScreen() {
   const router = useRouter();
+  const { profile } = useAuth();
   const [list, setList] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await quizzesService.listActive();
-    setList(res.data);
+    if (profile?.id) {
+      const res = await competitionsService.listAvailableQuizzes(profile.id);
+      setList(res.data);
+    } else {
+      const res = await quizzesService.listActive();
+      setList(res.data);
+    }
     setLoading(false);
-  }, []);
+  }, [profile?.id]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -40,7 +48,16 @@ export default function CompeteScreen() {
           <TouchableOpacity
             key={c.id}
             style={styles.card}
-            onPress={() => router.push(`/competition/${c.id}`)} // TODO: matchmaking for quiz
+            onPress={async () => {
+              if (!profile?.id) return;
+              const fee = Number((c as any).entry_fee_zmw || 22);
+              const { data, error } = await competitionsService.findOrCreateMatch(c.id, profile.id, fee);
+              if (error || !data) {
+                Alert.alert('Cannot join', error || 'Try again');
+                return;
+              }
+              router.push(`/competition/${data.id}`);
+            }}
             activeOpacity={0.85}
           >
             <View style={styles.icon}>
