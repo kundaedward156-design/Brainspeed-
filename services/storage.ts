@@ -2,6 +2,7 @@
  * Reliable image upload for Expo / React Native → Supabase Storage
  */
 import { supabase } from '@/services/supabase';
+import { AppConfig } from '@/constants/config';
 
 function guessExt(uri: string, mime?: string | null): string {
   const fromUri = uri.split('?')[0].split('.').pop()?.toLowerCase();
@@ -51,13 +52,11 @@ export async function uploadImageToBucket(
     throw new Error('Image file is empty. Try another photo.');
   }
 
-  // Convert to Blob for better compatibility with Supabase JS on React Native
-  const blob = new Blob([arrayBuffer], { type: contentType });
-
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
   const path = folder ? `${folder}/${fileName}` : fileName;
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, blob, {
+  // Upload as ArrayBuffer (most reliable on React Native)
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, arrayBuffer, {
     contentType,
     upsert: true,
   });
@@ -66,10 +65,10 @@ export async function uploadImageToBucket(
     throw new Error(uploadError.message || 'Storage upload failed.');
   }
 
-  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
-  if (!data?.publicUrl) {
-    throw new Error('Upload succeeded but public URL is missing.');
-  }
+  // Build public URL manually — more reliable than getPublicUrl in some RN builds
+  const base = AppConfig.supabase.url?.replace(/\/$/, '');
+  if (!base) throw new Error('Supabase URL is missing.');
+  const publicUrl = `${base}/storage/v1/object/public/${bucket}/${path}`;
 
-  return data.publicUrl;
+  return publicUrl;
 }
