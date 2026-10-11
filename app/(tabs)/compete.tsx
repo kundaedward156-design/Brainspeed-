@@ -7,17 +7,17 @@ import { Header } from '@/components/ui/Header';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Colors, Spacing, Typography, BorderRadius, Shadows } from '@/constants/theme';
-import { competitionsService } from '@/services/competitions';
-import type { Competition } from '@/types';
+import { quizzesService } from '@/services/quizzes';
+import type { Quiz } from '@/types';
 
 export default function CompeteScreen() {
   const router = useRouter();
-  const [list, setList] = useState<Competition[]>([]);
+  const [list, setList] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await competitionsService.listActive();
+    const res = await quizzesService.listActive();
     setList(res.data);
     setLoading(false);
   }, []);
@@ -40,7 +40,7 @@ export default function CompeteScreen() {
           <TouchableOpacity
             key={c.id}
             style={styles.card}
-            onPress={() => router.push(`/competition/${c.id}`)}
+            onPress={() => router.push(`/competition/${c.id}`)} // TODO: matchmaking for quiz
             activeOpacity={0.85}
           >
             <View style={styles.icon}>
@@ -49,7 +49,7 @@ export default function CompeteScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.title}>{c.title}</Text>
               <Text style={styles.meta}>
-                {c.reward != null ? `Reward: ${c.reward}` : 'Quiz'}
+                `Entry: K${(c as any).entry_fee_zmw ?? 0}`
                 {c.category?.name ? ` · ${c.category.name}` : ''}
               </Text>
             </View>

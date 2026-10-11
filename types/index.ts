@@ -50,8 +50,11 @@ export interface Banner {
   title: string;
   image_url?: string | null;
   link_url?: string | null;
-  sort_order: number;
-  active: boolean;
+  destination?: string | null;
+  sort_order?: number;
+  priority?: number;
+  active?: boolean;
+  is_active?: boolean;
 }
 
 export interface CompetitionEntry {

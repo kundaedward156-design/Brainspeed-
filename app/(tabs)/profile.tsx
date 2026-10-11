@@ -86,6 +86,9 @@ export default function ProfileScreen() {
       </View>
 
       <Card style={styles.menuCard}>
+        <MenuRow icon="cash-outline" label={`Wallet: K${profile?.balance_zmw ?? 0}`} onPress={() => router.push('/deposit')} />
+        <MenuRow icon="add-circle-outline" label="Deposit funds" onPress={() => router.push('/deposit')} />
+
         <MenuRow icon="notifications-outline" label="Notifications" onPress={() => router.push('/notifications')} />
         <MenuRow icon="settings-outline" label="Settings" onPress={() => router.push('/settings')} />
         {isAdmin ? (

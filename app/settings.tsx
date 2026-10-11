@@ -79,7 +79,7 @@ export default function SettingsScreen() {
     setSaving(true);
     try {
       // Upload to public banners bucket under avatars/ folder (or rewards if preferred)
-      const publicUrl = await uploadImageToBucket('banners', localUri, 'avatars');
+      const publicUrl = await uploadImageToBucket('avatars', localUri);
       const { error } = await profilesService.update(profile.id, { avatar_url: publicUrl });
       if (error) throw new Error(error);
       setAvatarUri(publicUrl);

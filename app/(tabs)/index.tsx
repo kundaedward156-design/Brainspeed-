@@ -1,7 +1,7 @@
 /**
  * Home — banners + competitions list
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -32,6 +32,7 @@ export default function HomeScreen() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(true);
   const [bannerIndex, setBannerIndex] = useState(0);
+  const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,6 +50,20 @@ export default function HomeScreen() {
       load();
     }, [load])
   );
+
+
+  useEffect(() => {
+    if (banners.length <= 1) return;
+    const timer = setInterval(() => {
+      setBannerIndex((prev) => {
+        const next = (prev + 1) % banners.length;
+        const cardWidth = WIDTH - Spacing.xxl * 2 + Spacing.md;
+        scrollRef.current?.scrollTo({ x: next * cardWidth, animated: true });
+        return next;
+      });
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [banners.length]);
 
   if (loading) {
     return (
@@ -76,6 +91,7 @@ export default function HomeScreen() {
 
       {banners.length > 0 ? (
         <ScrollView
+          ref={scrollRef}
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}

@@ -25,7 +25,7 @@ function contentTypeFor(ext: string, mime?: string | null): string {
  * Returns the public URL. Throws with the exact error message on failure.
  */
 export async function uploadImageToBucket(
-  bucket: 'banners' | 'rewards',
+  bucket: 'banners' | 'rewards' | 'avatars',
   imageUri: string,
   folder = ''
 ): Promise<string> {
