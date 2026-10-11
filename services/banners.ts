@@ -46,15 +46,23 @@ export const bannersService = {
       return { data: null, error: 'Image upload failed — no public URL returned.' };
     }
 
-    const row = {
+    const row: Record<string, unknown> = {
       title: payload.title,
       image_url,
-      destination: payload.link_url ?? null,
       priority: payload.sort_order ?? 0,
       is_active: payload.active ?? true,
     };
+    if (payload.link_url) row.destination = payload.link_url;
 
-    const { data, error } = await supabase.from('banners').insert(row).select().maybeSingle();
+    let { data, error } = await supabase.from('banners').insert(row).select().maybeSingle();
+
+    // Fallback if destination column does not exist
+    if (error && /destination|column/i.test(error.message)) {
+      delete row.destination;
+      const retry = await supabase.from('banners').insert(row).select().maybeSingle();
+      data = retry.data;
+      error = retry.error;
+    }
 
     return { data: (data as Banner) ?? null, error: error?.message ?? null };
   },
