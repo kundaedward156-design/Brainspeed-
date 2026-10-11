@@ -40,7 +40,8 @@
     "react-native-screens": "~4.1.0",
     "react-native-url-polyfill": "^2.0.0",
     "react-native-web": "~0.19.13",
-    "expo-notifications": "~0.29.0"
+    "expo-notifications": "~0.29.0",
+    "expo-file-system": "~18.0.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",

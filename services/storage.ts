@@ -3,18 +3,15 @@
  */
 import { supabase } from '@/services/supabase';
 import { AppConfig } from '@/constants/config';
+import * as FileSystem from 'expo-file-system';
 
-function guessExt(uri: string, mime?: string | null): string {
+function guessExt(uri: string): string {
   const fromUri = uri.split('?')[0].split('.').pop()?.toLowerCase();
   if (fromUri && fromUri.length <= 5 && /^[a-z0-9]+$/.test(fromUri)) return fromUri;
-  if (mime?.includes('png')) return 'png';
-  if (mime?.includes('webp')) return 'webp';
-  if (mime?.includes('gif')) return 'gif';
   return 'jpg';
 }
 
-function contentTypeFor(ext: string, mime?: string | null): string {
-  if (mime && mime.startsWith('image/')) return mime;
+function contentTypeFor(ext: string): string {
   if (ext === 'png') return 'image/png';
   if (ext === 'webp') return 'image/webp';
   if (ext === 'gif') return 'image/gif';
@@ -22,8 +19,8 @@ function contentTypeFor(ext: string, mime?: string | null): string {
 }
 
 /**
- * Upload a local file URI (or existing https URL) to a public storage bucket.
- * Returns the public URL. Throws with the exact error message on failure.
+ * Upload a local file URI to a public storage bucket.
+ * Uses expo-file-system base64 (most reliable on Android).
  */
 export async function uploadImageToBucket(
   bucket: 'banners' | 'rewards' | 'avatars',
@@ -33,30 +30,28 @@ export async function uploadImageToBucket(
   if (!supabase) throw new Error('Supabase is not connected.');
   if (!imageUri?.trim()) throw new Error('No image selected.');
 
-  // Already a remote URL — reuse it
   if (imageUri.startsWith('http://') || imageUri.startsWith('https://')) {
     return imageUri;
   }
 
-  const response = await fetch(imageUri);
-  if (!response.ok) {
-    throw new Error(`Could not read image file (${response.status}). Try picking the image again.`);
-  }
-
-  const mime = response.headers.get('content-type');
-  const ext = guessExt(imageUri, mime);
-  const contentType = contentTypeFor(ext, mime);
-  const arrayBuffer = await response.arrayBuffer();
-
-  if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-    throw new Error('Image file is empty. Try another photo.');
-  }
-
+  const ext = guessExt(imageUri);
+  const contentType = contentTypeFor(ext);
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
   const path = folder ? `${folder}/${fileName}` : fileName;
 
-  // Upload as ArrayBuffer (most reliable on React Native)
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, arrayBuffer, {
+  // Read as base64 — works with content:// and file:// on Android
+  const base64 = await FileSystem.readAsStringAsync(imageUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  if (!base64) throw new Error('Could not read the selected photo.');
+
+  // Convert base64 to ArrayBuffer
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, bytes, {
     contentType,
     upsert: true,
   });
@@ -65,10 +60,7 @@ export async function uploadImageToBucket(
     throw new Error(uploadError.message || 'Storage upload failed.');
   }
 
-  // Build public URL manually — more reliable than getPublicUrl in some RN builds
   const base = AppConfig.supabase.url?.replace(/\/$/, '');
   if (!base) throw new Error('Supabase URL is missing.');
-  const publicUrl = `${base}/storage/v1/object/public/${bucket}/${path}`;
-
-  return publicUrl;
+  return `${base}/storage/v1/object/public/${bucket}/${path}`;
 }
