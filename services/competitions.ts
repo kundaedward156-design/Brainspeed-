@@ -15,6 +15,20 @@ function normalizeOptions(raw: unknown): string[] {
 }
 
 export const competitionsService = {
+  async listActive(): Promise<{ data: any[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    try {
+      const { data, error } = await supabase
+        .from('competitions')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(20);
+      return { data: data ?? [], error: error?.message ?? null };
+    } catch (e: any) {
+      return { data: [], error: e?.message ?? 'Failed' };
+    }
+  },
+
   /** List quizzes the current user has not yet completed */
   async listAvailableQuizzes(userId: string): Promise<{ data: any[]; error: string | null }> {
     if (!supabase) return { data: [], error: null };

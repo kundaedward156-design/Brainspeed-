@@ -36,13 +36,19 @@ export default function HomeScreen() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [b, c] = await Promise.all([
-      bannersService.listActive(),
-      competitionsService.listActive(),
-    ]);
-    setBanners(b.data);
-    setCompetitions(c.data);
-    setLoading(false);
+    try {
+      const [b, c] = await Promise.all([
+        bannersService.listActive().catch(() => ({ data: [] })),
+        competitionsService.listActive().catch(() => ({ data: [] })),
+      ]);
+      setBanners(b.data ?? []);
+      setCompetitions(c.data ?? []);
+    } catch {
+      setBanners([]);
+      setCompetitions([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useFocusEffect(
