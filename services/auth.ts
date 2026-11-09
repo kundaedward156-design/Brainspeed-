@@ -1,5 +1,5 @@
 /**
- * Email + password auth → profiles (id = auth.uid() UUID)
+ * Auth: Email+password OR Phone OTP (Africa's Talking via Edge Functions)
  */
 import type { Profile } from '@/types';
 import { supabase, isSupabaseConfigured } from '@/services/supabase';
@@ -70,6 +70,80 @@ export const authService = {
         ? null
         : 'Account created. Please verify your email if required, then log in.',
     };
+  },
+
+  /** Request SMS OTP via Africa's Talking (Edge Function send-otp) */
+  async requestPhoneOtp(phone: string): Promise<{ success: boolean; error: string | null; debug_otp?: string }> {
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'App is not connected to the server yet.' };
+    }
+    const { data, error } = await supabase.functions.invoke('send-otp', {
+      body: { phone },
+    });
+    if (error) return { success: false, error: error.message };
+    const res = data as { success?: boolean; error?: string; debug_otp?: string };
+    if (!res?.success) return { success: false, error: res?.error || 'Failed to send OTP' };
+    return { success: true, error: null, debug_otp: res.debug_otp };
+  },
+
+  /** Verify OTP → create-session → sign in */
+  async verifyPhoneOtp(
+    phone: string,
+    code: string,
+    full_name?: string
+  ): Promise<{ user: Profile | null; error: string | null }> {
+    if (!isSupabaseConfigured || !supabase) {
+      return { user: null, error: 'App is not connected to the server yet.' };
+    }
+    const { data, error } = await supabase.functions.invoke('verify-otp', {
+      body: { phone, code, full_name },
+    });
+    if (error) return { user: null, error: error.message };
+    const res = data as {
+      success?: boolean;
+      error?: string;
+      user_id?: string;
+      exchange_token?: string;
+    };
+    if (!res?.success || !res.exchange_token) {
+      return { user: null, error: res?.error || 'Verification failed' };
+    }
+
+    const { data: sess, error: sessErr } = await supabase.functions.invoke('create-session', {
+      body: { exchange_token: res.exchange_token, phone },
+    });
+    if (sessErr) return { user: null, error: sessErr.message };
+    const s = sess as {
+      success?: boolean;
+      error?: string;
+      email?: string;
+      temp_password?: string;
+      hashed_token?: string;
+      user_id?: string;
+    };
+    if (!s?.success) return { user: null, error: s?.error || 'Session failed' };
+
+    if (s.temp_password && s.email) {
+      const { data: signed, error: signErr } = await supabase.auth.signInWithPassword({
+        email: s.email,
+        password: s.temp_password,
+      });
+      if (signErr) return { user: null, error: signErr.message };
+      const profile = await fetchProfile(signed.user?.id || s.user_id || '');
+      return { user: profile, error: profile ? null : 'Profile missing' };
+    }
+
+    if (s.hashed_token) {
+      const { data: verified, error: vErr } = await supabase.auth.verifyOtp({
+        token_hash: s.hashed_token,
+        type: 'magiclink',
+      });
+      if (vErr) return { user: null, error: vErr.message };
+      const profile = await fetchProfile(verified.user?.id || s.user_id || '');
+      return { user: profile, error: profile ? null : 'Profile missing' };
+    }
+
+    return { user: null, error: 'Could not establish session' };
   },
 
   async logout(): Promise<{ error: string | null }> {

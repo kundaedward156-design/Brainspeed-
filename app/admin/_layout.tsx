@@ -64,6 +64,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="settings-rules" options={{ href: null }} />
       <Tabs.Screen name="settings-scoring" options={{ href: null }} />
       <Tabs.Screen name="settings-maintenance" options={{ href: null }} />
+      <Tabs.Screen name="settings-fees" options={{ href: null }} />
     </Tabs>
   );
 }

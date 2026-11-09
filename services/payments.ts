@@ -18,6 +18,7 @@ export interface PaymentResult {
   success: boolean;
   transaction_id?: string;
   error?: string;
+  message?: string;
 }
 
 import { supabase } from '@/services/supabase';

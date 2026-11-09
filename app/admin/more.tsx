@@ -12,6 +12,7 @@ const ROWS = [
   { icon: 'people-outline' as const, title: 'View entries', href: '/admin/entries' },
   { icon: 'document-text-outline' as const, title: 'Competition rules', href: '/admin/settings-rules' },
   { icon: 'stats-chart-outline' as const, title: 'Scoring configuration', href: '/admin/settings-scoring' },
+  { icon: 'cash-outline' as const, title: 'Fees & entry amount', href: '/admin/settings-fees' },
   { icon: 'construct-outline' as const, title: 'Maintenance mode', href: '/admin/settings-maintenance' },
 ];
 

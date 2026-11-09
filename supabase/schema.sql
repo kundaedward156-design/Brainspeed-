@@ -241,3 +241,84 @@ create policy "settings_admin" on public.app_settings for all using (public.is_a
 
 -- Optional: alter table public.profiles add column if not exists push_token text;
 
+
+-- ===== Lipila + Africa's Talking support =====
+
+create table if not exists public.otp_codes (
+  id uuid primary key default gen_random_uuid(),
+  phone text not null,
+  code text not null,
+  expires_at timestamptz not null,
+  used boolean not null default false,
+  purpose text not null default 'login',
+  user_id uuid references public.profiles (id),
+  created_at timestamptz not null default now()
+);
+create index if not exists otp_codes_phone_idx on public.otp_codes (phone, used);
+
+create table if not exists public.payment_transactions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.profiles (id),
+  type text not null check (type in ('deposit', 'withdraw', 'entry_fee', 'prize')),
+  amount_zmw numeric(12,2) not null,
+  phone text,
+  reference_id text unique,
+  status text not null default 'pending',
+  provider text not null default 'lipila',
+  provider_response jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.app_settings (
+  key text primary key,
+  value jsonb not null default '{}',
+  updated_at timestamptz not null default now()
+);
+
+-- Default platform fees (admin can edit via app_settings)
+insert into public.app_settings (key, value)
+values
+  ('platform_fees', '{"platform_fee_zmw": 3, "default_entry_fee_zmw": 23, "competition_fee_zmw": 20}'::jsonb),
+  ('scoring', '{"points_per_correct": 5}'::jsonb)
+on conflict (key) do nothing;
+
+-- Ensure profiles has phone column
+alter table public.profiles add column if not exists phone text;
+create unique index if not exists profiles_phone_unique on public.profiles (phone) where phone is not null;
+
+-- Balance helpers
+create or replace function public.deduct_balance(uid uuid, amount numeric)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update public.profiles
+  set balance_zmw = balance_zmw - amount, updated_at = now()
+  where id = uid and balance_zmw >= amount;
+  if not found then
+    raise exception 'Insufficient balance';
+  end if;
+end;
+$$;
+
+create or replace function public.credit_balance(uid uuid, amount numeric)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update public.profiles
+  set balance_zmw = balance_zmw + amount, updated_at = now()
+  where id = uid;
+end;
+$$;
+
+create or replace function public.increment_wins(uid uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update public.profiles set wins = wins + 1, updated_at = now() where id = uid;
+end;
+$$;
+
+create or replace function public.increment_losses(uid uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update public.profiles set losses = losses + 1, updated_at = now() where id = uid;
+end;
+$$;

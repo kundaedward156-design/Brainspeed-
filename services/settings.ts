@@ -43,7 +43,7 @@ export const settingsService = {
   async getScoring(): Promise<{ data: ScoringSetting; error: string | null }> {
     const { value, error } = await getKey('scoring');
     return {
-      data: (value as ScoringSetting) ?? { points_per_correct: 10 },
+      data: (value as ScoringSetting) ?? { points_per_correct: 5 },
       error,
     };
   },
@@ -62,5 +62,28 @@ export const settingsService = {
 
   async setMaintenance(enabled: boolean, message: string): Promise<{ error: string | null }> {
     return setKey('maintenance', { enabled, message });
+  },
+
+  async getPlatformFees(): Promise<{
+    data: { platform_fee_zmw: number; default_entry_fee_zmw: number; competition_fee_zmw: number };
+    error: string | null;
+  }> {
+    const { value, error } = await getKey('platform_fees');
+    return {
+      data: {
+        platform_fee_zmw: Number((value as any)?.platform_fee_zmw ?? 3),
+        default_entry_fee_zmw: Number((value as any)?.default_entry_fee_zmw ?? 23),
+        competition_fee_zmw: Number((value as any)?.competition_fee_zmw ?? 20),
+      },
+      error,
+    };
+  },
+
+  async setPlatformFees(fees: {
+    platform_fee_zmw: number;
+    default_entry_fee_zmw: number;
+    competition_fee_zmw: number;
+  }): Promise<{ error: string | null }> {
+    return setKey('platform_fees', fees as unknown as Record<string, unknown>);
   },
 };

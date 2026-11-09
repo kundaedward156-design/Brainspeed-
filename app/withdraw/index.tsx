@@ -9,27 +9,25 @@ import { AppConfig } from '@/constants/config';
 import { paymentsService } from '@/services/payments';
 import { useAuth } from '@/contexts/AuthContext';
 
-const MIN_WITHDRAW = 50;
-
 export default function WithdrawScreen() {
-  const { profile, refresh } = useAuth();
+  const { profile } = useAuth();
   const [amount, setAmount] = useState('');
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState(profile?.phone?.replace('+260', '0') || '');
   const [loading, setLoading] = useState(false);
-  const balance = Number(profile?.balance_zmw ?? 0);
 
   const onWithdraw = async () => {
     const value = parseFloat(amount);
-    if (!value || value < MIN_WITHDRAW) {
-      Alert.alert('Minimum', `Minimum withdrawal is K${MIN_WITHDRAW}.`);
-      return;
-    }
-    if (value > balance) {
-      Alert.alert('Insufficient', 'Not enough balance.');
+    if (!value || value <= 0) {
+      Alert.alert('Invalid amount', `Enter a valid amount in ${AppConfig.currency}.`);
       return;
     }
     if (!phone.trim()) {
       Alert.alert('Phone required', 'Enter your mobile money number.');
+      return;
+    }
+    const bal = Number(profile?.balance_zmw || 0);
+    if (value > bal) {
+      Alert.alert('Insufficient balance', `Available: ZMW ${bal}`);
       return;
     }
     setLoading(true);
@@ -40,10 +38,9 @@ export default function WithdrawScreen() {
         competition_id: '',
       });
       if (result.success) {
-        Alert.alert('Success', 'Withdrawal initiated.');
-        await refresh();
+        Alert.alert('Success', result.message || 'Withdrawal initiated. You will be notified when it completes.');
       } else {
-        Alert.alert('Unavailable', result.error ?? 'Please try again later.');
+        Alert.alert('Withdrawal failed', result.error ?? 'Please try again later.');
       }
     } finally {
       setLoading(false);
@@ -53,11 +50,15 @@ export default function WithdrawScreen() {
   return (
     <Screen scroll keyboardAvoid>
       <Header title="Withdraw" showBack />
-      <Text style={styles.sub}>Available: K{balance.toFixed(2)} · Min K{MIN_WITHDRAW}</Text>
+      <Text style={styles.sub}>
+        Send funds to your mobile money (MTN / Airtel / Zamtel) via Lipila.
+        {'\n'}Available: ZMW {Number(profile?.balance_zmw || 0).toFixed(0)}
+      </Text>
       <Input
         label={`Amount (${AppConfig.currency})`}
         placeholder="50"
         keyboardType="decimal-pad"
+        leftIcon="cash-outline"
         value={amount}
         onChangeText={setAmount}
       />
@@ -65,6 +66,7 @@ export default function WithdrawScreen() {
         label="Mobile Money Number"
         placeholder="097XXXXXXX"
         keyboardType="phone-pad"
+        leftIcon="phone-portrait-outline"
         value={phone}
         onChangeText={setPhone}
       />
