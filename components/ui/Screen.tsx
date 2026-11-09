@@ -30,10 +30,10 @@ export function Screen({
   contentStyle,
   edges = ['top', 'bottom'],
   keyboardAvoid = false,
-  theme = 'light',
+  theme = 'dark',
   refreshControl,
 }: ScreenProps) {
-  const bg = theme === 'dark' ? Colors.navy : Colors.background;
+  const bg = theme === 'dark' ? Colors.background : Colors.surface;
   const bar = theme === 'dark' ? 'light-content' : 'dark-content';
 
   const body = scroll ? (

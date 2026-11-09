@@ -85,7 +85,10 @@ export const competitionsService = {
       return { data: { ...waiting, player2_id: userId, status: 'active' }, error: null };
     }
 
-    // Create new as player1
+    // Create new as player1 — K23 total (K20 competition + K3 platform)
+    const platformFee = 3;
+    const competitionFee = Math.max(0, entryFee - platformFee);
+    const prize = competitionFee * 2; // both players' competition fees go to prize pool
     const { data: created, error } = await supabase
       .from('competitions')
       .insert({
@@ -93,7 +96,8 @@ export const competitionsService = {
         player1_id: userId,
         status: 'waiting',
         entry_fee_zmw: entryFee,
-        prize_zmw: entryFee * 2 - 4, // simple platform fee
+        platform_fee_zmw: platformFee,
+        prize_zmw: prize,
       })
       .select()
       .single();
@@ -133,11 +137,18 @@ export const competitionsService = {
     return { data: rows, error: error?.message ?? null };
   },
 
-  async submitAnswer(competitionId: string, questionId: string, selectedIndex: number, userId: string): Promise<{ correct: boolean; error: string | null }> {
-    if (!supabase) return { correct: false, error: 'Not connected' };
+  async submitAnswer(
+    competitionId: string,
+    questionId: string,
+    selectedIndex: number,
+    userId: string,
+    timeTakenMs: number = 0
+  ): Promise<{ correct: boolean; points: number; error: string | null }> {
+    if (!supabase) return { correct: false, points: 0, error: 'Not connected' };
     const { data: q } = await supabase.from('questions').select('correct_index').eq('id', questionId).single();
     const correct = q?.correct_index === selectedIndex;
-    const points = correct ? 1 : 0;
+    // 5 points per correct answer (per foundation requirements)
+    const points = correct ? 5 : 0;
 
     await supabase.from('answers').insert({
       competition_id: competitionId,
@@ -145,39 +156,65 @@ export const competitionsService = {
       question_id: questionId,
       selected_index: selectedIndex,
       is_correct: correct,
+      time_taken_ms: Math.max(0, Math.round(timeTakenMs)),
       points_earned: points,
     });
 
-    return { correct, error: null };
+    return { correct, points, error: null };
   },
 
-  async finishCompetition(competitionId: string, userId: string, finalScore: number): Promise<{ error: string | null }> {
+  async finishCompetition(
+    competitionId: string,
+    userId: string,
+    finalScore: number,
+    totalTimeMs: number = 0
+  ): Promise<{ error: string | null }> {
     if (!supabase) return { error: 'Not connected' };
     const { data: comp } = await supabase.from('competitions').select('*').eq('id', competitionId).single();
     if (!comp) return { error: 'Competition not found' };
 
     const isP1 = comp.player1_id === userId;
-    const update: any = isP1 ? { player1_score: finalScore } : { player2_score: finalScore };
+    const update: any = isP1
+      ? { player1_score: finalScore, player1_time_ms: totalTimeMs }
+      : { player2_score: finalScore, player2_time_ms: totalTimeMs };
 
-    // If both scores present, determine winner
-    const p1 = isP1 ? finalScore : (comp.player1_score || 0);
-    const p2 = !isP1 ? finalScore : (comp.player2_score || 0);
+    // If both scores present, determine winner by score then faster total response time
+    const p1Score = isP1 ? finalScore : (comp.player1_score || 0);
+    const p2Score = !isP1 ? finalScore : (comp.player2_score || 0);
+    const p1Time = isP1 ? totalTimeMs : (comp.player1_time_ms || 0);
+    const p2Time = !isP1 ? totalTimeMs : (comp.player2_time_ms || 0);
+
     if (comp.player1_id && comp.player2_id && (isP1 ? comp.player2_score != null : comp.player1_score != null)) {
       update.status = 'completed';
       update.completed_at = new Date().toISOString();
-      if (p1 > p2) update.winner_id = comp.player1_id;
-      else if (p2 > p1) update.winner_id = comp.player2_id;
-      // award prize to winner (simplified)
+      if (p1Score > p2Score) {
+        update.winner_id = comp.player1_id;
+      } else if (p2Score > p1Score) {
+        update.winner_id = comp.player2_id;
+      } else {
+        // Tie on score → faster total response time wins
+        if (p1Time > 0 && p2Time > 0) {
+          update.winner_id = p1Time < p2Time ? comp.player1_id : comp.player2_id;
+        } else if (p1Time > 0) {
+          update.winner_id = comp.player1_id;
+        } else if (p2Time > 0) {
+          update.winner_id = comp.player2_id;
+        }
+      }
+      // award prize to winner
       if (update.winner_id) {
         const prize = Number(comp.prize_zmw || 0);
         await supabase.rpc('credit_balance', { uid: update.winner_id, amount: prize }).catch(() => {});
-        // create notification
         await supabase.from('notifications').insert({
           user_id: update.winner_id,
           title: 'You won!',
           body: `You won the quiz and received K${prize}.`,
           type: 'win',
         });
+        // Update wins/losses on profiles
+        const loserId = update.winner_id === comp.player1_id ? comp.player2_id : comp.player1_id;
+        await supabase.rpc('increment_wins', { uid: update.winner_id }).catch(() => {});
+        if (loserId) await supabase.rpc('increment_losses', { uid: loserId }).catch(() => {});
       }
     }
 

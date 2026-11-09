@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, RefreshControl, Alert } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '@/components/ui/Screen';
@@ -50,7 +50,8 @@ export default function CompeteScreen() {
             style={styles.card}
             onPress={async () => {
               if (!profile?.id) return;
-              const fee = Number((c as any).entry_fee_zmw || 22);
+              // K23 = K20 competition fee + K3 platform fee (foundation)
+              const fee = Number((c as any).entry_fee_zmw || 23);
               const { data, error } = await competitionsService.findOrCreateMatch(c.id, profile.id, fee);
               if (error || !data) {
                 Alert.alert('Cannot join', error || 'Try again');
