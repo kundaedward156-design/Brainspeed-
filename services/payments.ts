@@ -1,57 +1,37 @@
 /**
- * Lipila payment interface.
- * Client only starts a request; secret key stays on Edge Function.
+ * Wallet. The app only asks; Lipila keys and all balance changes live on the server.
  */
-
-export interface DepositRequest {
-  amount_zmw: number;
-  phone: string;
-}
-
-export interface PayoutRequest {
-  amount_zmw: number;
-  phone: string;
-  competition_id: string;
-}
+import { supabase } from '@/services/supabase';
+import type { WalletEntry } from '@/types';
 
 export interface PaymentResult {
   success: boolean;
-  transaction_id?: string;
+  reference?: string;
   error?: string;
   message?: string;
 }
 
-import { supabase } from '@/services/supabase';
+async function invoke(fn: string, body: Record<string, unknown>): Promise<PaymentResult> {
+  if (!supabase) return { success: false, error: 'Not connected' };
+  const { data, error } = await supabase.functions.invoke(fn, { body });
+  if (error) return { success: false, error: 'Connection problem. Please try again.' };
+  return (data as PaymentResult) ?? { success: false, error: 'No response from the server.' };
+}
 
 export const paymentsService = {
-  async initiateDeposit(req: DepositRequest): Promise<PaymentResult> {
-    if (!supabase) return { success: false, error: 'Not connected' };
-    const { data, error } = await supabase.functions.invoke('lipila-deposit', {
-      body: req,
-    });
-    if (error) return { success: false, error: error.message };
-    return (data as PaymentResult) ?? { success: false, error: 'No response' };
+  deposit: (amount_zmw: number, phone: string) => invoke('lipila-deposit', { amount_zmw, phone }),
+  withdraw: (amount_zmw: number, phone: string) => invoke('lipila-payout', { amount_zmw, phone }),
+
+  /** Ask the server to check any pending deposits/withdrawals with Lipila. */
+  async refreshPending(): Promise<number> {
+    if (!supabase) return 0;
+    const { data } = await supabase.functions.invoke('lipila-status', { body: {} });
+    return Number((data as { settled?: number } | null)?.settled ?? 0);
   },
 
-  async initiatePayout(req: PayoutRequest): Promise<PaymentResult> {
-    if (!supabase) return { success: false, error: 'Not connected' };
-    const { data, error } = await supabase.functions.invoke('lipila-payout', {
-      body: req,
-    });
-    if (error) return { success: false, error: error.message };
-    return (data as PaymentResult) ?? { success: false, error: 'No response' };
-  },
-
-  async reserveEntryFee(
-    userId: string,
-    amount_zmw: number,
-    competitionId: string
-  ): Promise<PaymentResult> {
-    if (!supabase) return { success: false, error: 'Not connected' };
-    const { data, error } = await supabase.functions.invoke('reserve-entry-fee', {
-      body: { user_id: userId, amount_zmw, competition_id: competitionId },
-    });
-    if (error) return { success: false, error: error.message };
-    return (data as PaymentResult) ?? { success: false, error: 'No response' };
+  async history(limit = 50): Promise<{ data: WalletEntry[]; error: string | null }> {
+    if (!supabase) return { data: [], error: null };
+    const { data, error } = await supabase.rpc('get_wallet_history', { p_limit: limit });
+    return { data: (data as WalletEntry[]) ?? [], error: error?.message ?? null };
   },
 };

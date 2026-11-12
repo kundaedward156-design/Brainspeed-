@@ -116,7 +116,7 @@ export default function AdminCategories() {
     <Screen
       scroll
       contentStyle={{}}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.gold} />}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
     >
       <Header title="Categories" showBack />
       <Card style={styles.card}>
@@ -146,7 +146,7 @@ export default function AdminCategories() {
       ) : (
         list.map((c, i) => (
           <View key={c.id} style={styles.row}>
-            <Ionicons name={(c.icon as any) || 'grid-outline'} size={22} color={Colors.gold} />
+            <Ionicons name={(c.icon as any) || 'grid-outline'} size={22} color={Colors.primary} />
             <Text style={styles.rowTitle}>{c.name}</Text>
             <TouchableOpacity onPress={() => move(c, -1)} disabled={i === 0}>
               <Ionicons name="arrow-up" size={20} color={i === 0 ? Colors.textMuted : Colors.text} />
@@ -155,7 +155,7 @@ export default function AdminCategories() {
               <Ionicons name="arrow-down" size={20} color={i === list.length - 1 ? Colors.textMuted : Colors.text} />
             </TouchableOpacity>
             <TouchableOpacity onPress={() => onEdit(c)}>
-              <Ionicons name="create-outline" size={20} color={Colors.gold} />
+              <Ionicons name="create-outline" size={20} color={Colors.primary} />
             </TouchableOpacity>
             <TouchableOpacity onPress={() => onDelete(c)}>
               <Ionicons name="trash-outline" size={20} color={Colors.error} />

@@ -1,9 +1,21 @@
--- Brainspeed full schema (UUID everywhere)
--- Run in Supabase SQL Editor once
+-- ============================================================================
+-- Brainspeed / Quivanta Quiz — complete database schema (v2, server-authoritative)
+--
+-- SAFE TO RE-RUN. Run the whole file once in: Supabase Dashboard → SQL Editor.
+--
+-- Design rules
+--   * The mobile app NEVER changes money, scores, winners or roles directly.
+--   * All of that happens in the SQL functions below, which can only be called
+--     by Edge Functions (service_role). Players have no EXECUTE on them.
+--   * Players cannot read the questions table (so correct answers never leave
+--     the server). Questions reach the app one at a time through the match flow.
+-- ============================================================================
 
 create extension if not exists "pgcrypto";
 
--- Profiles (id = auth.users.id)
+-- ---------------------------------------------------------------------------
+-- 1. Core tables
+-- ---------------------------------------------------------------------------
 create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   full_name text not null default '',
@@ -14,33 +26,17 @@ create table if not exists public.profiles (
   wins int not null default 0,
   losses int not null default 0,
   total_score int not null default 0,
-  balance_zmw numeric(12,2) not null default 0,
+  balance_zmw numeric(12,2) not null default 0 check (balance_zmw >= 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer set search_path = public
-as $$
-begin
-  insert into public.profiles (id, full_name, email, role)
-  values (
-    new.id,
-    coalesce(new.raw_user_meta_data->>'full_name', ''),
-    new.email,
-    'player'
-  )
-  on conflict (id) do nothing;
-  return new;
-end;
-$$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
+alter table public.profiles add column if not exists draws int not null default 0;
+alter table public.profiles add column if not exists games_played int not null default 0;
+alter table public.profiles add column if not exists correct_answers int not null default 0;
+alter table public.profiles add column if not exists push_token text;
+alter table public.profiles add column if not exists push_enabled boolean not null default true;
+create unique index if not exists profiles_phone_unique on public.profiles (phone) where phone is not null;
+create index if not exists profiles_rank_idx on public.profiles (total_score desc, wins desc);
 
 create table if not exists public.categories (
   id uuid primary key default gen_random_uuid(),
@@ -60,8 +56,8 @@ create table if not exists public.questions (
   options jsonb not null default '[]',
   correct_index int not null default 0,
   difficulty text not null default 'medium',
-  time_limit_sec int not null default 15,
-  points int not null default 10,
+  time_limit_sec int not null default 30,
+  points int not null default 5,
   is_active boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -72,7 +68,7 @@ create table if not exists public.quizzes (
   category_id uuid references public.categories (id) on delete set null,
   question_ids uuid[] not null default '{}',
   question_count int not null default 0,
-  entry_fee_zmw numeric(12,2) not null default 22,
+  entry_fee_zmw numeric(12,2) not null default 23,
   is_active boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -82,17 +78,33 @@ create table if not exists public.competitions (
   quiz_id uuid references public.quizzes (id),
   player1_id uuid references public.profiles (id),
   player2_id uuid references public.profiles (id),
-  status text not null default 'waiting',
+  status text not null default 'pending_accept',
   player1_score int not null default 0,
   player2_score int not null default 0,
   winner_id uuid references public.profiles (id),
-  entry_fee_zmw numeric(12,2) not null default 22,
-  platform_fee_zmw numeric(12,2) not null default 4,
+  entry_fee_zmw numeric(12,2) not null default 23,
+  platform_fee_zmw numeric(12,2) not null default 6,
   prize_zmw numeric(12,2) not null default 40,
   started_at timestamptz,
   completed_at timestamptz,
   created_at timestamptz not null default now()
 );
+alter table public.competitions add column if not exists competition_fee_zmw numeric(12,2) not null default 20;
+alter table public.competitions add column if not exists question_ids uuid[] not null default '{}';
+alter table public.competitions add column if not exists current_index int not null default 0;
+alter table public.competitions add column if not exists question_started_at timestamptz;
+alter table public.competitions add column if not exists question_seconds int not null default 30;
+alter table public.competitions add column if not exists p1_accepted boolean not null default false;
+alter table public.competitions add column if not exists p2_accepted boolean not null default false;
+alter table public.competitions add column if not exists accept_deadline timestamptz;
+alter table public.competitions add column if not exists player1_correct int not null default 0;
+alter table public.competitions add column if not exists player2_correct int not null default 0;
+alter table public.competitions add column if not exists player1_time_ms bigint not null default 0;
+alter table public.competitions add column if not exists player2_time_ms bigint not null default 0;
+alter table public.competitions add column if not exists is_draw boolean not null default false;
+alter table public.competitions add column if not exists cancelled_reason text;
+create index if not exists competitions_p1_idx on public.competitions (player1_id, status);
+create index if not exists competitions_p2_idx on public.competitions (player2_id, status);
 
 create table if not exists public.answers (
   id uuid primary key default gen_random_uuid(),
@@ -105,6 +117,17 @@ create table if not exists public.answers (
   points_earned int not null default 0,
   created_at timestamptz not null default now()
 );
+alter table public.answers add column if not exists question_index int not null default 0;
+create unique index if not exists answers_one_per_question
+  on public.answers (competition_id, player_id, question_index);
+
+create table if not exists public.match_queue (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  quiz_id uuid,
+  fee_zmw numeric(12,2) not null,
+  created_at timestamptz not null default now(),
+  last_seen timestamptz not null default now()
+);
 
 create table if not exists public.rewards (
   id uuid primary key default gen_random_uuid(),
@@ -116,6 +139,7 @@ create table if not exists public.rewards (
   created_at timestamptz not null default now()
 );
 
+-- In-game money ledger (entry fees, refunds, prizes)
 create table if not exists public.reward_transactions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references public.profiles (id),
@@ -127,6 +151,24 @@ create table if not exists public.reward_transactions (
   status text not null default 'completed',
   created_at timestamptz not null default now()
 );
+
+-- Mobile-money movements (deposit / withdraw) via Lipila
+create table if not exists public.payment_transactions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.profiles (id),
+  type text not null check (type in ('deposit', 'withdraw', 'entry_fee', 'prize')),
+  amount_zmw numeric(12,2) not null,
+  phone text,
+  reference_id text unique,
+  status text not null default 'pending',
+  provider text not null default 'lipila',
+  provider_response jsonb,
+  failure_reason text,
+  settled_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists payment_tx_user_idx on public.payment_transactions (user_id, created_at desc);
 
 create table if not exists public.banners (
   id uuid primary key default gen_random_uuid(),
@@ -152,25 +194,694 @@ create table if not exists public.notifications (
   data jsonb,
   created_at timestamptz not null default now()
 );
+create index if not exists notifications_user_idx on public.notifications (user_id, created_at desc);
+
+-- app_settings: key/value. Older installs had a different shape → rebuild it.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'app_settings' and column_name = 'id')
+     and not exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'app_settings' and column_name = 'key') then
+    drop table public.app_settings;
+  end if;
+end $$;
 
 create table if not exists public.app_settings (
-  id uuid primary key default gen_random_uuid(),
-  competition_rules text default '',
-  scoring_config jsonb default '{}',
-  reward_config jsonb default '{}',
-  maintenance_mode boolean not null default false,
-  min_entry_fee_zmw numeric(12,2) default 10,
-  max_entry_fee_zmw numeric(12,2) default 100
+  key text primary key,
+  value jsonb not null default '{}',
+  updated_at timestamptz not null default now()
 );
 
--- RLS helpers
-create or replace function public.is_admin()
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (
-    select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'
-  );
+insert into public.app_settings (key, value) values
+  ('platform_fees', '{"platform_fee_zmw": 3, "competition_fee_zmw": 20, "default_entry_fee_zmw": 23}'),
+  ('scoring',       '{"points_per_correct": 5, "question_seconds": 30, "question_count": 10, "fastest_takes_point": true}'),
+  ('wallet',        '{"min_deposit": 5, "max_deposit": 5000, "min_withdraw": 10, "max_withdraw": 5000}'),
+  ('links',         '{"telegram_url": "", "privacy_url": "", "terms_url": "", "support_email": "", "whatsapp_url": ""}'),
+  ('maintenance',   '{"enabled": false, "message": ""}')
+on conflict (key) do nothing;
+
+-- Community link supplied by the client (only fills it in if the admin has not set one)
+update public.app_settings
+   set value = value || '{"telegram_url": "https://t.me/+Xql6LOBoHbo3ZTRk"}'::jsonb
+ where key = 'links' and coalesce(value->>'telegram_url', '') = '';
+
+-- ---------------------------------------------------------------------------
+-- 2. New-user trigger (works for phone sign-in and email sign-up)
+-- ---------------------------------------------------------------------------
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_phone text := nullif(new.phone, '');
+begin
+  insert into public.profiles (id, full_name, email, phone, role)
+  values (
+    new.id,
+    coalesce(nullif(new.raw_user_meta_data->>'full_name', ''), 'Player'),
+    new.email,
+    case when v_phone is not null then '+' || ltrim(v_phone, '+') end,
+    'player'
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
 $$;
 
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- ---------------------------------------------------------------------------
+-- 3. Helpers
+-- ---------------------------------------------------------------------------
+create or replace function public.is_admin()
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin');
+$$;
+
+create or replace function public.setting(k text, d jsonb default '{}')
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce((select value from public.app_settings where key = k), d);
+$$;
+
+create or replace function public.mask_name(n text)
+returns text language sql immutable as $$
+  select case
+    when n is null or btrim(n) = '' then 'Player'
+    when n ~ '^[+0-9 ]{7,}$' then left(regexp_replace(n, '\D', '', 'g'), 5) || '•••' || right(regexp_replace(n, '\D', '', 'g'), 2)
+    else n
+  end;
+$$;
+
+create or replace function public._notify(p_uid uuid, p_title text, p_body text, p_type text, p_data jsonb default null)
+returns void language sql security definer set search_path = public as $$
+  insert into public.notifications (user_id, title, body, type, data) values (p_uid, p_title, p_body, p_type, p_data);
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 4. Wallet primitives (service_role only)
+-- ---------------------------------------------------------------------------
+drop function if exists public.deduct_balance(uuid, numeric);
+drop function if exists public.credit_balance(uuid, numeric);
+drop function if exists public.increment_wins(uuid);
+drop function if exists public.increment_losses(uuid);
+
+create or replace function public._debit(p_uid uuid, p_amt numeric, p_comp uuid, p_type text)
+returns numeric language plpgsql security definer set search_path = public as $$
+declare v_bal numeric;
+begin
+  update public.profiles set balance_zmw = balance_zmw - p_amt, updated_at = now()
+   where id = p_uid and balance_zmw >= p_amt returning balance_zmw into v_bal;
+  if not found then raise exception 'INSUFFICIENT_BALANCE'; end if;
+  insert into public.reward_transactions (user_id, competition_id, type, amount_zmw, balance_after_zmw)
+  values (p_uid, p_comp, p_type, -p_amt, v_bal);
+  return v_bal;
+end;
+$$;
+
+create or replace function public._credit(p_uid uuid, p_amt numeric, p_comp uuid, p_type text)
+returns numeric language plpgsql security definer set search_path = public as $$
+declare v_bal numeric;
+begin
+  update public.profiles set balance_zmw = balance_zmw + p_amt, updated_at = now()
+   where id = p_uid returning balance_zmw into v_bal;
+  insert into public.reward_transactions (user_id, competition_id, type, amount_zmw, balance_after_zmw)
+  values (p_uid, p_comp, p_type, p_amt, v_bal);
+  return v_bal;
+end;
+$$;
+
+-- Start a deposit: just records a pending row (money is credited only after Lipila confirms)
+create or replace function public.begin_deposit(p_uid uuid, p_amount numeric, p_phone text, p_ref text)
+returns void language plpgsql security definer set search_path = public as $$
+declare w jsonb := public.setting('wallet');
+begin
+  if p_amount < coalesce((w->>'min_deposit')::numeric, 5) then
+    raise exception 'Minimum deposit is K%', coalesce(w->>'min_deposit', '5'); end if;
+  if p_amount > coalesce((w->>'max_deposit')::numeric, 5000) then
+    raise exception 'Maximum deposit is K%', coalesce(w->>'max_deposit', '5000'); end if;
+  insert into public.payment_transactions (user_id, type, amount_zmw, phone, reference_id, status)
+  values (p_uid, 'deposit', p_amount, p_phone, p_ref, 'pending');
+end;
+$$;
+
+-- Start a withdrawal: validates + holds the money atomically
+create or replace function public.begin_withdrawal(p_uid uuid, p_amount numeric, p_phone text, p_ref text)
+returns numeric language plpgsql security definer set search_path = public as $$
+declare w jsonb := public.setting('wallet'); v_bal numeric;
+begin
+  if p_amount < coalesce((w->>'min_withdraw')::numeric, 10) then
+    raise exception 'Minimum withdrawal is K%', coalesce(w->>'min_withdraw', '10'); end if;
+  if p_amount > coalesce((w->>'max_withdraw')::numeric, 5000) then
+    raise exception 'Maximum withdrawal is K%', coalesce(w->>'max_withdraw', '5000'); end if;
+  if (select count(*) from public.payment_transactions
+       where user_id = p_uid and type = 'withdraw' and status = 'pending') >= 3 then
+    raise exception 'You already have pending withdrawals. Please wait for them to finish.';
+  end if;
+  update public.profiles set balance_zmw = balance_zmw - p_amount, updated_at = now()
+   where id = p_uid and balance_zmw >= p_amount returning balance_zmw into v_bal;
+  if not found then raise exception 'Insufficient balance'; end if;
+  insert into public.payment_transactions (user_id, type, amount_zmw, phone, reference_id, status)
+  values (p_uid, 'withdraw', p_amount, p_phone, p_ref, 'pending');
+  return v_bal;
+end;
+$$;
+
+-- Final status from Lipila. Idempotent: safe to call from webhook AND polling.
+create or replace function public.settle_payment(p_ref text, p_status text, p_response jsonb default null, p_reason text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare t public.payment_transactions; v_bal numeric;
+begin
+  select * into t from public.payment_transactions where reference_id = p_ref for update;
+  if not found then return jsonb_build_object('ok', false, 'error', 'not_found'); end if;
+  if t.status <> 'pending' then
+    return jsonb_build_object('ok', true, 'status', t.status, 'already', true);
+  end if;
+
+  if p_status = 'completed' then
+    if t.type = 'deposit' then
+      update public.profiles set balance_zmw = balance_zmw + t.amount_zmw, updated_at = now()
+       where id = t.user_id returning balance_zmw into v_bal;
+      perform public._notify(t.user_id, 'Deposit confirmed',
+        'K' || trim(to_char(t.amount_zmw, 'FM999999990.00')) || ' has been added to your wallet.', 'deposit',
+        jsonb_build_object('reference', p_ref));
+    else
+      perform public._notify(t.user_id, 'Withdrawal confirmed',
+        'K' || trim(to_char(t.amount_zmw, 'FM999999990.00')) || ' was sent to ' || coalesce(t.phone, 'your mobile money') || '.', 'withdrawal',
+        jsonb_build_object('reference', p_ref));
+    end if;
+    update public.payment_transactions
+       set status = 'completed', provider_response = p_response, settled_at = now(), updated_at = now()
+     where id = t.id;
+    return jsonb_build_object('ok', true, 'status', 'completed');
+  elsif p_status = 'failed' then
+    if t.type = 'withdraw' then
+      update public.profiles set balance_zmw = balance_zmw + t.amount_zmw, updated_at = now() where id = t.user_id;
+      perform public._notify(t.user_id, 'Withdrawal failed',
+        'Your withdrawal of K' || trim(to_char(t.amount_zmw, 'FM999999990.00')) || ' could not be completed. The money is back in your wallet.', 'withdrawal',
+        jsonb_build_object('reference', p_ref));
+    else
+      perform public._notify(t.user_id, 'Deposit not completed',
+        'Your deposit of K' || trim(to_char(t.amount_zmw, 'FM999999990.00')) || ' was not approved. You have not been charged.', 'deposit',
+        jsonb_build_object('reference', p_ref));
+    end if;
+    update public.payment_transactions
+       set status = 'failed', provider_response = p_response, failure_reason = p_reason, settled_at = now(), updated_at = now()
+     where id = t.id;
+    return jsonb_build_object('ok', true, 'status', 'failed');
+  end if;
+  return jsonb_build_object('ok', true, 'status', 'pending');
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 5. Matchmaking + match engine (service_role only)
+-- ---------------------------------------------------------------------------
+create or replace function public._entry_fee()
+returns numeric language sql stable security definer set search_path = public as $$
+  select coalesce((public.setting('platform_fees')->>'competition_fee_zmw')::numeric, 20)
+       + coalesce((public.setting('platform_fees')->>'platform_fee_zmw')::numeric, 3);
+$$;
+
+-- Put a player (whose fee is already held) back into the queue and try to pair
+create or replace function public._enqueue(p_uid uuid, p_fee numeric)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.match_queue (user_id, fee_zmw) values (p_uid, p_fee)
+  on conflict (user_id) do update set last_seen = now();
+  perform public._try_pair();
+end;
+$$;
+
+create or replace function public._try_pair()
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  a public.match_queue; b public.match_queue;
+  v_ids uuid[]; v_n int; v_comp uuid;
+  sc jsonb := public.setting('scoring'); fees jsonb := public.setting('platform_fees');
+  v_count int := coalesce((sc->>'question_count')::int, 10);
+  v_secs int := coalesce((sc->>'question_seconds')::int, 30);
+  v_cfee numeric := coalesce((fees->>'competition_fee_zmw')::numeric, 20);
+  v_pfee numeric := coalesce((fees->>'platform_fee_zmw')::numeric, 3);
+begin
+  loop
+    select * into a from public.match_queue where last_seen > now() - interval '15 seconds'
+      order by created_at limit 1;
+    exit when not found;
+    select * into b from public.match_queue
+      where user_id <> a.user_id and last_seen > now() - interval '15 seconds'
+      order by created_at limit 1;
+    exit when not found;
+
+    select array_agg(id) into v_ids from (
+      select id from public.questions where is_active order by random() limit v_count) q;
+    v_n := coalesce(array_length(v_ids, 1), 0);
+    exit when v_n = 0;
+
+    insert into public.competitions (
+      player1_id, player2_id, status, entry_fee_zmw, competition_fee_zmw, platform_fee_zmw, prize_zmw,
+      question_ids, question_seconds, accept_deadline
+    ) values (
+      a.user_id, b.user_id, 'pending_accept', v_cfee + v_pfee, v_cfee, v_pfee * 2, v_cfee * 2,
+      v_ids, v_secs, now() + interval '20 seconds'
+    ) returning id into v_comp;
+
+    delete from public.match_queue where user_id in (a.user_id, b.user_id);
+    perform public._notify(a.user_id, 'Match found', 'An opponent is ready. Accept to start the match.', 'match_found', jsonb_build_object('competition_id', v_comp));
+    perform public._notify(b.user_id, 'Match found', 'An opponent is ready. Accept to start the match.', 'match_found', jsonb_build_object('competition_id', v_comp));
+  end loop;
+end;
+$$;
+
+-- Close one question (fill timeouts), then move on or finish
+create or replace function public._advance(p_comp uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  c public.competitions; v_total int; v_deadline timestamptz; v_n int; v_next timestamptz;
+  v_early boolean; i int := 0;
+begin
+  loop
+    i := i + 1; exit when i > 60;
+    select * into c from public.competitions where id = p_comp for update;
+    exit when not found or c.status <> 'active';
+    v_total := coalesce(array_length(c.question_ids, 1), 0);
+    v_deadline := c.question_started_at + make_interval(secs => c.question_seconds);
+    select count(*) into v_n from public.answers where competition_id = c.id and question_index = c.current_index;
+    v_early := v_n >= 2;
+    exit when not v_early and now() <= v_deadline + interval '1 second';
+
+    -- timeouts for anyone who did not answer
+    insert into public.answers (competition_id, player_id, question_id, selected_index, is_correct, time_taken_ms, points_earned, question_index)
+    select c.id, pl, c.question_ids[c.current_index + 1], null, false, c.question_seconds * 1000, 0, c.current_index
+      from unnest(array[c.player1_id, c.player2_id]) pl
+     where not exists (select 1 from public.answers a where a.competition_id = c.id and a.player_id = pl and a.question_index = c.current_index);
+
+    if c.current_index + 1 >= v_total then
+      perform public._finalize(c.id);
+      exit;
+    end if;
+    v_next := case when v_early then now() else v_deadline end + interval '2 seconds';
+    update public.competitions set current_index = c.current_index + 1, question_started_at = v_next where id = c.id;
+  end loop;
+end;
+$$;
+
+create or replace function public._finalize(p_comp uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  c public.competitions;
+  s1 int; s2 int; k1 int; k2 int; t1 bigint; t2 bigint; w uuid; draw boolean := false; loser uuid;
+begin
+  select * into c from public.competitions where id = p_comp for update;
+  if not found or c.status = 'completed' then return; end if;
+
+  select coalesce(sum(points_earned),0), count(*) filter (where is_correct), coalesce(sum(time_taken_ms),0)
+    into s1, k1, t1 from public.answers where competition_id = c.id and player_id = c.player1_id;
+  select coalesce(sum(points_earned),0), count(*) filter (where is_correct), coalesce(sum(time_taken_ms),0)
+    into s2, k2, t2 from public.answers where competition_id = c.id and player_id = c.player2_id;
+
+  if s1 > s2 then w := c.player1_id;
+  elsif s2 > s1 then w := c.player2_id;
+  elsif t1 < t2 then w := c.player1_id;
+  elsif t2 < t1 then w := c.player2_id;
+  else draw := true; end if;
+
+  update public.competitions set
+    status = 'completed', completed_at = now(), winner_id = w, is_draw = draw,
+    player1_score = s1, player2_score = s2, player1_correct = k1, player2_correct = k2,
+    player1_time_ms = t1, player2_time_ms = t2
+  where id = c.id;
+
+  if draw then
+    perform public._credit(c.player1_id, c.entry_fee_zmw, c.id, 'entry_refund');
+    perform public._credit(c.player2_id, c.entry_fee_zmw, c.id, 'entry_refund');
+  else
+    perform public._credit(w, c.prize_zmw, c.id, 'prize');
+    loser := case when w = c.player1_id then c.player2_id else c.player1_id end;
+  end if;
+
+  update public.profiles set
+    games_played = games_played + 1, total_score = total_score + s1, correct_answers = correct_answers + k1,
+    wins = wins + (case when w = c.player1_id then 1 else 0 end),
+    losses = losses + (case when not draw and w <> c.player1_id then 1 else 0 end),
+    draws = draws + (case when draw then 1 else 0 end), updated_at = now()
+  where id = c.player1_id;
+  update public.profiles set
+    games_played = games_played + 1, total_score = total_score + s2, correct_answers = correct_answers + k2,
+    wins = wins + (case when w = c.player2_id then 1 else 0 end),
+    losses = losses + (case when not draw and w <> c.player2_id then 1 else 0 end),
+    draws = draws + (case when draw then 1 else 0 end), updated_at = now()
+  where id = c.player2_id;
+
+  perform public._notify(c.player1_id, 'Match results',
+    case when draw then 'It was a draw. Your entry fee was refunded.' when w = c.player1_id then 'You won! ' || s1 || ' to ' || s2 || '.' else 'You lost ' || s1 || ' to ' || s2 || '. Play again!' end,
+    'match_result', jsonb_build_object('competition_id', c.id));
+  perform public._notify(c.player2_id, 'Match results',
+    case when draw then 'It was a draw. Your entry fee was refunded.' when w = c.player2_id then 'You won! ' || s2 || ' to ' || s1 || '.' else 'You lost ' || s2 || ' to ' || s1 || '. Play again!' end,
+    'match_result', jsonb_build_object('competition_id', c.id));
+  if w is not null then
+    perform public._notify(w, 'Prize received', 'K' || trim(to_char(c.prize_zmw, 'FM999999990.00')) || ' has been added to your wallet.', 'prize',
+      jsonb_build_object('competition_id', c.id));
+  end if;
+end;
+$$;
+
+-- Cancel an unaccepted request: refund who did not accept, re-queue who did
+create or replace function public._expire_pending(p_comp uuid, p_reason text)
+returns void language plpgsql security definer set search_path = public as $$
+declare c public.competitions;
+begin
+  select * into c from public.competitions where id = p_comp for update;
+  if not found or c.status <> 'pending_accept' then return; end if;
+  update public.competitions set status = 'cancelled', cancelled_reason = p_reason where id = c.id;
+
+  if c.p1_accepted then perform public._enqueue(c.player1_id, c.entry_fee_zmw);
+  else
+    perform public._credit(c.player1_id, c.entry_fee_zmw, c.id, 'entry_refund');
+    perform public._notify(c.player1_id, 'Match cancelled', 'The match was cancelled and your entry fee was refunded.', 'match_found', jsonb_build_object('competition_id', c.id));
+  end if;
+  if c.p2_accepted then perform public._enqueue(c.player2_id, c.entry_fee_zmw);
+  else
+    perform public._credit(c.player2_id, c.entry_fee_zmw, c.id, 'entry_refund');
+    perform public._notify(c.player2_id, 'Match cancelled', 'The match was cancelled and your entry fee was refunded.', 'match_found', jsonb_build_object('competition_id', c.id));
+  end if;
+end;
+$$;
+
+-- Housekeeping: expired requests, ghost queue entries. Called often; also by pg_cron.
+create or replace function public.sweep_matches()
+returns void language plpgsql security definer set search_path = public as $$
+declare r record;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  for r in select id from public.competitions where status = 'pending_accept' and accept_deadline < now() loop
+    perform public._expire_pending(r.id, 'timeout');
+  end loop;
+  for r in select id from public.competitions where status = 'active' loop
+    perform public._advance(r.id);
+  end loop;
+  for r in select user_id, fee_zmw from public.match_queue where last_seen < now() - interval '30 seconds' loop
+    delete from public.match_queue where user_id = r.user_id;
+    perform public._credit(r.user_id, r.fee_zmw, null, 'entry_refund');
+  end loop;
+end;
+$$;
+
+create or replace function public.find_match(p_uid uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_fee numeric := public._entry_fee();
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  if (public.setting('maintenance')->>'enabled')::boolean is true then
+    raise exception 'The app is under maintenance. Please try again later.'; end if;
+  if exists (select 1 from public.competitions where status in ('pending_accept','active')
+              and (player1_id = p_uid or player2_id = p_uid)) or exists (select 1 from public.match_queue where user_id = p_uid) then
+    return public.match_state(p_uid);
+  end if;
+  if not exists (select 1 from public.questions where is_active) then
+    raise exception 'No questions are available yet. Please try again later.'; end if;
+
+  perform public._debit(p_uid, v_fee, null, 'entry_fee');
+  perform public._enqueue(p_uid, v_fee);
+  return public.match_state(p_uid);
+end;
+$$;
+
+create or replace function public.cancel_search(p_uid uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare q public.match_queue; c public.competitions;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  delete from public.match_queue where user_id = p_uid returning * into q;
+  if found then perform public._credit(p_uid, q.fee_zmw, null, 'entry_refund'); end if;
+  select * into c from public.competitions where status = 'pending_accept' and (player1_id = p_uid or player2_id = p_uid) limit 1;
+  if found then return public.respond_match(p_uid, c.id, false); end if;
+  return jsonb_build_object('status', 'idle');
+end;
+$$;
+
+create or replace function public.respond_match(p_uid uuid, p_comp uuid, p_accept boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare c public.competitions; v_other uuid;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  select * into c from public.competitions where id = p_comp for update;
+  if not found or p_uid not in (c.player1_id, c.player2_id) then raise exception 'Match not found'; end if;
+  if c.status <> 'pending_accept' then return public.match_state(p_uid); end if;
+  if c.accept_deadline < now() then perform public._expire_pending(c.id, 'timeout'); return public.match_state(p_uid); end if;
+
+  if not p_accept then
+    v_other := case when p_uid = c.player1_id then c.player2_id else c.player1_id end;
+    update public.competitions set status = 'cancelled', cancelled_reason = 'declined' where id = c.id;
+    perform public._credit(p_uid, c.entry_fee_zmw, c.id, 'entry_refund');
+    perform public._notify(v_other, 'Opponent left', 'Your opponent declined. We are finding you a new one.', 'match_found', jsonb_build_object('competition_id', c.id));
+    perform public._enqueue(v_other, c.entry_fee_zmw);
+    return jsonb_build_object('status', 'idle');
+  end if;
+
+  if p_uid = c.player1_id then update public.competitions set p1_accepted = true where id = c.id;
+  else update public.competitions set p2_accepted = true where id = c.id; end if;
+
+  select * into c from public.competitions where id = p_comp;
+  if c.p1_accepted and c.p2_accepted then
+    update public.competitions set status = 'active', started_at = now(),
+           current_index = 0, question_started_at = now() + interval '4 seconds'
+     where id = c.id;
+    perform public._notify(c.player1_id, 'Match starting', 'Both players are in. Get ready!', 'match_start', jsonb_build_object('competition_id', c.id));
+    perform public._notify(c.player2_id, 'Match starting', 'Both players are in. Get ready!', 'match_start', jsonb_build_object('competition_id', c.id));
+  end if;
+  return public.match_state(p_uid);
+end;
+$$;
+
+create or replace function public.submit_answer(p_uid uuid, p_comp uuid, p_index int, p_selected int)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  c public.competitions; v_q public.questions; v_ms int; v_ok boolean; v_pts int := 0;
+  sc jsonb := public.setting('scoring'); v_pp int := coalesce((sc->>'points_per_correct')::int, 5);
+  v_fastest boolean := coalesce((sc->>'fastest_takes_point')::boolean, true);
+begin
+  select * into c from public.competitions where id = p_comp for update;
+  if not found or p_uid not in (c.player1_id, c.player2_id) then raise exception 'Match not found'; end if;
+  if c.status <> 'active' then return public.match_state(p_uid); end if;
+  if p_index <> c.current_index then return public.match_state(p_uid); end if;
+  if now() < c.question_started_at then raise exception 'Question has not started yet'; end if;
+  if now() > c.question_started_at + make_interval(secs => c.question_seconds) + interval '1 second' then
+    perform public._advance(c.id); return public.match_state(p_uid); end if;
+  if exists (select 1 from public.answers where competition_id = c.id and player_id = p_uid and question_index = p_index) then
+    return public.match_state(p_uid); end if;
+  if p_selected is null or p_selected < 0 or p_selected > 3 then raise exception 'Invalid answer'; end if;
+
+  select * into v_q from public.questions where id = c.question_ids[p_index + 1];
+  v_ok := (v_q.correct_index = p_selected);
+  v_ms := least(c.question_seconds * 1000, greatest(0, (extract(epoch from (now() - c.question_started_at)) * 1000)::int));
+
+  if v_ok then
+    v_pts := v_pp;
+    if v_fastest and exists (select 1 from public.answers where competition_id = c.id and question_index = p_index
+                              and player_id <> p_uid and is_correct and points_earned > 0) then
+      v_pts := 0;  -- opponent was faster on this question
+    end if;
+  end if;
+
+  insert into public.answers (competition_id, player_id, question_id, selected_index, is_correct, time_taken_ms, points_earned, question_index)
+  values (c.id, p_uid, v_q.id, p_selected, v_ok, v_ms, v_pts, p_index);
+
+  perform public._advance(c.id);
+  return public.match_state(p_uid) || jsonb_build_object('last_answer',
+    jsonb_build_object('index', p_index, 'selected', p_selected, 'correct', v_ok, 'correct_index', v_q.correct_index, 'points', v_pts, 'time_ms', v_ms));
+end;
+$$;
+
+-- Everything the app needs to render the current screen
+create or replace function public.match_state(p_uid uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  c public.competitions; q public.match_queue; v_opp uuid; v_oppp public.profiles;
+  v_total int; v_idx int; v_question public.questions; v_my public.answers; v_op public.answers;
+  v_ms1 int; v_ms2 int; v_score_me int; v_score_op int;
+begin
+  select * into c from public.competitions
+   where status in ('pending_accept','active') and (player1_id = p_uid or player2_id = p_uid)
+   order by created_at desc limit 1;
+
+  if found then
+    if c.status = 'active' then
+      perform public._advance(c.id);
+      select * into c from public.competitions where id = c.id;
+    elsif c.accept_deadline < now() then
+      perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+      perform public._expire_pending(c.id, 'timeout');
+      select * into c from public.competitions where id = c.id;
+    end if;
+  end if;
+
+  if not found or c.status not in ('pending_accept','active') then
+    select * into q from public.match_queue where user_id = p_uid;
+    if found then
+      update public.match_queue set last_seen = now() where user_id = p_uid;
+      return jsonb_build_object('status', 'searching', 'waited_s', extract(epoch from (now() - q.created_at))::int,
+                                'fee', q.fee_zmw, 'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+    -- a match that just finished? point the app to the result
+    select * into c from public.competitions
+     where status = 'completed' and (player1_id = p_uid or player2_id = p_uid)
+       and completed_at > now() - interval '2 minutes' order by completed_at desc limit 1;
+    if found then
+      return jsonb_build_object('status', 'completed', 'competition_id', c.id, 'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+    return jsonb_build_object('status', 'idle', 'server_time', (extract(epoch from now()) * 1000)::bigint);
+  end if;
+
+  v_opp := case when c.player1_id = p_uid then c.player2_id else c.player1_id end;
+  select * into v_oppp from public.profiles where id = v_opp;
+
+  if c.status = 'pending_accept' then
+    return jsonb_build_object(
+      'status', 'pending_accept', 'competition_id', c.id, 'fee', c.entry_fee_zmw, 'prize', c.prize_zmw,
+      'deadline', (extract(epoch from c.accept_deadline) * 1000)::bigint,
+      'i_accepted', case when c.player1_id = p_uid then c.p1_accepted else c.p2_accepted end,
+      'opponent', jsonb_build_object('name', public.mask_name(v_oppp.full_name), 'avatar_url', v_oppp.avatar_url),
+      'server_time', (extract(epoch from now()) * 1000)::bigint);
+  end if;
+
+  v_total := coalesce(array_length(c.question_ids, 1), 0);
+  v_idx := c.current_index;
+  select * into v_question from public.questions where id = c.question_ids[v_idx + 1];
+  select * into v_my from public.answers where competition_id = c.id and player_id = p_uid and question_index = v_idx;
+  select * into v_op from public.answers where competition_id = c.id and player_id = v_opp and question_index = v_idx;
+  select coalesce(sum(points_earned), 0) into v_score_me from public.answers where competition_id = c.id and player_id = p_uid;
+  select coalesce(sum(points_earned), 0) into v_score_op from public.answers where competition_id = c.id and player_id = v_opp;
+
+  return jsonb_build_object(
+    'status', 'active', 'competition_id', c.id, 'server_time', (extract(epoch from now()) * 1000)::bigint,
+    'index', v_idx, 'total', v_total,
+    'question_started_at', (extract(epoch from c.question_started_at) * 1000)::bigint,
+    'question_seconds', c.question_seconds,
+    'question', jsonb_build_object('id', v_question.id, 'text', v_question.text, 'image_url', v_question.image_url, 'options', v_question.options),
+    'me', jsonb_build_object('score', v_score_me, 'answered', v_my.id is not null, 'selected', v_my.selected_index,
+                             'correct', v_my.is_correct, 'points', v_my.points_earned,
+                             'correct_index', case when v_my.id is not null then v_question.correct_index end),
+    'opponent', jsonb_build_object('name', public.mask_name(v_oppp.full_name), 'avatar_url', v_oppp.avatar_url,
+                                   'score', v_score_op, 'answered', v_op.id is not null));
+end;
+$$;
+
+create or replace function public.match_result(p_uid uuid, p_comp uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare c public.competitions; p1 public.profiles; p2 public.profiles;
+begin
+  select * into c from public.competitions where id = p_comp;
+  if not found or p_uid not in (c.player1_id, c.player2_id) then raise exception 'Match not found'; end if;
+  if c.status <> 'completed' then raise exception 'Match is not finished'; end if;
+  select * into p1 from public.profiles where id = c.player1_id;
+  select * into p2 from public.profiles where id = c.player2_id;
+  return jsonb_build_object(
+    'competition_id', c.id, 'is_draw', c.is_draw, 'winner_id', c.winner_id, 'prize', c.prize_zmw, 'total_questions', array_length(c.question_ids, 1),
+    'me', case when p_uid = c.player1_id
+      then jsonb_build_object('id', p1.id, 'name', p1.full_name, 'avatar_url', p1.avatar_url, 'score', c.player1_score, 'correct', c.player1_correct, 'time_ms', c.player1_time_ms)
+      else jsonb_build_object('id', p2.id, 'name', p2.full_name, 'avatar_url', p2.avatar_url, 'score', c.player2_score, 'correct', c.player2_correct, 'time_ms', c.player2_time_ms) end,
+    'opponent', case when p_uid = c.player1_id
+      then jsonb_build_object('id', p2.id, 'name', public.mask_name(p2.full_name), 'avatar_url', p2.avatar_url, 'score', c.player2_score, 'correct', c.player2_correct, 'time_ms', c.player2_time_ms)
+      else jsonb_build_object('id', p1.id, 'name', public.mask_name(p1.full_name), 'avatar_url', p1.avatar_url, 'score', c.player1_score, 'correct', c.player1_correct, 'time_ms', c.player1_time_ms) end);
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 6. Public / player read functions (callable by signed-in users)
+-- ---------------------------------------------------------------------------
+create or replace function public.get_leaderboard(p_limit int default 10)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'top', coalesce((
+      select jsonb_agg(t order by t.rank) from (
+        select row_number() over (order by total_score desc, wins desc, created_at) as rank,
+               id as user_id, public.mask_name(full_name) as name, avatar_url,
+               games_played, wins, total_score as points
+          from public.profiles
+         where games_played > 0
+         order by total_score desc, wins desc, created_at
+         limit least(greatest(p_limit, 1), 50)) t), '[]'::jsonb),
+    'winners', coalesce((
+      select jsonb_agg(w) from (
+        select public.mask_name(p.full_name) as name, p.avatar_url, c.prize_zmw as prize, c.completed_at
+          from public.competitions c join public.profiles p on p.id = c.winner_id
+         where c.status = 'completed' and c.winner_id is not null
+         order by c.completed_at desc limit 10) w), '[]'::jsonb),
+    'updated_at', now());
+$$;
+
+create or replace function public.get_wallet_history(p_limit int default 50)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(x order by x.created_at desc), '[]'::jsonb) from (
+    select id, type, case when type = 'withdraw' then -amount_zmw else amount_zmw end as amount,
+           status, created_at, phone as detail
+      from public.payment_transactions where user_id = auth.uid()
+    union all
+    select id, type, amount_zmw, status, created_at, null
+      from public.reward_transactions where user_id = auth.uid()
+    order by created_at desc limit least(greatest(p_limit, 1), 100)) x;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 7. Admin functions
+-- ---------------------------------------------------------------------------
+create or replace function public.admin_stats()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  return jsonb_build_object(
+    'users', (select count(*) from public.profiles),
+    'questions', (select count(*) from public.questions where is_active),
+    'matches_completed', (select count(*) from public.competitions where status = 'completed'),
+    'matches_live', (select count(*) from public.competitions where status in ('pending_accept','active')),
+    'deposits_total', coalesce((select sum(amount_zmw) from public.payment_transactions where type = 'deposit' and status = 'completed'), 0),
+    'withdrawals_total', coalesce((select sum(amount_zmw) from public.payment_transactions where type = 'withdraw' and status = 'completed'), 0),
+    'withdrawals_pending', (select count(*) from public.payment_transactions where type = 'withdraw' and status = 'pending'),
+    'platform_revenue', coalesce((select sum(platform_fee_zmw) from public.competitions where status = 'completed' and not is_draw), 0),
+    'wallet_balances', coalesce((select sum(balance_zmw) from public.profiles), 0));
+end;
+$$;
+
+create or replace function public.admin_list_transactions(p_type text default null, p_limit int default 100)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  return coalesce((select jsonb_agg(x) from (
+    select t.id, t.type, t.amount_zmw, t.status, t.phone, t.reference_id, t.failure_reason, t.created_at, p.full_name
+      from public.payment_transactions t left join public.profiles p on p.id = t.user_id
+     where p_type is null or t.type = p_type
+     order by t.created_at desc limit least(p_limit, 300)) x), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.admin_list_matches(p_limit int default 100)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  return coalesce((select jsonb_agg(x) from (
+    select c.id, c.status, c.player1_score, c.player2_score, c.prize_zmw, c.is_draw, c.created_at,
+           p1.full_name as player1, p2.full_name as player2, w.full_name as winner
+      from public.competitions c
+      left join public.profiles p1 on p1.id = c.player1_id
+      left join public.profiles p2 on p2.id = c.player2_id
+      left join public.profiles w on w.id = c.winner_id
+     order by c.created_at desc limit least(p_limit, 300)) x), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.admin_send_announcement(p_title text, p_body text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  insert into public.notifications (user_id, title, body, type) values (null, p_title, p_body, 'system');
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 8. Row Level Security
+-- ---------------------------------------------------------------------------
 alter table public.profiles enable row level security;
 alter table public.categories enable row level security;
 alter table public.questions enable row level security;
@@ -179,146 +890,123 @@ alter table public.competitions enable row level security;
 alter table public.answers enable row level security;
 alter table public.rewards enable row level security;
 alter table public.reward_transactions enable row level security;
+alter table public.payment_transactions enable row level security;
 alter table public.banners enable row level security;
 alter table public.notifications enable row level security;
 alter table public.app_settings enable row level security;
+alter table public.match_queue enable row level security;
 
--- Profiles
-create policy "profiles_select_own_or_admin" on public.profiles for select
-  using (id = auth.uid() or public.is_admin());
-create policy "profiles_update_own" on public.profiles for update
-  using (id = auth.uid());
-create policy "profiles_insert_own" on public.profiles for insert
-  with check (id = auth.uid());
-
--- Public read for game content
-create policy "categories_read" on public.categories for select using (true);
-create policy "categories_admin_write" on public.categories for all using (public.is_admin());
-
-create policy "questions_read" on public.questions for select using (true);
-create policy "questions_admin_write" on public.questions for all using (public.is_admin());
-
-create policy "quizzes_read" on public.quizzes for select using (true);
-create policy "quizzes_admin_write" on public.quizzes for all using (public.is_admin());
-
-create policy "banners_read" on public.banners for select using (true);
-create policy "banners_admin_write" on public.banners for all using (public.is_admin());
-
-create policy "rewards_read" on public.rewards for select using (true);
-create policy "rewards_admin_write" on public.rewards for all using (public.is_admin());
-
-create policy "competitions_participants" on public.competitions for select
-  using (player1_id = auth.uid() or player2_id = auth.uid() or public.is_admin());
-create policy "competitions_insert" on public.competitions for insert
-  with check (player1_id = auth.uid());
-create policy "competitions_update_participants" on public.competitions for update
-  using (player1_id = auth.uid() or player2_id = auth.uid() or public.is_admin());
-
-create policy "answers_own" on public.answers for select
-  using (player_id = auth.uid() or public.is_admin());
-create policy "answers_insert_own" on public.answers for insert
-  with check (player_id = auth.uid());
-
-create policy "tx_own" on public.reward_transactions for select
-  using (user_id = auth.uid() or public.is_admin());
-
-create policy "notif_own" on public.notifications for select
-  using (user_id = auth.uid() or user_id is null or public.is_admin());
-create policy "notif_update_own" on public.notifications for update
-  using (user_id = auth.uid());
-
-create policy "settings_read" on public.app_settings for select using (true);
-create policy "settings_admin" on public.app_settings for all using (public.is_admin());
-
--- Storage buckets (run in dashboard or via API): banners, rewards — public read
-
-
--- Optional helpers (run if you want client-side balance updates)
--- create or replace function public.deduct_balance(uid uuid, amount numeric) returns void language plpgsql security definer as $$
--- begin update public.profiles set balance_zmw = balance_zmw - amount where id = uid and balance_zmw >= amount; end; $$;
--- create or replace function public.credit_balance(uid uuid, amount numeric) returns void language plpgsql security definer as $$
--- begin update public.profiles set balance_zmw = balance_zmw + amount where id = uid; end; $$;
-
--- Optional: alter table public.profiles add column if not exists push_token text;
-
-
--- ===== Lipila + Africa's Talking support =====
-
-create table if not exists public.otp_codes (
-  id uuid primary key default gen_random_uuid(),
-  phone text not null,
-  code text not null,
-  expires_at timestamptz not null,
-  used boolean not null default false,
-  purpose text not null default 'login',
-  user_id uuid references public.profiles (id),
-  created_at timestamptz not null default now()
-);
-create index if not exists otp_codes_phone_idx on public.otp_codes (phone, used);
-
-create table if not exists public.payment_transactions (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid references public.profiles (id),
-  type text not null check (type in ('deposit', 'withdraw', 'entry_fee', 'prize')),
-  amount_zmw numeric(12,2) not null,
-  phone text,
-  reference_id text unique,
-  status text not null default 'pending',
-  provider text not null default 'lipila',
-  provider_response jsonb,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table if not exists public.app_settings (
-  key text primary key,
-  value jsonb not null default '{}',
-  updated_at timestamptz not null default now()
-);
-
--- Default platform fees (admin can edit via app_settings)
-insert into public.app_settings (key, value)
-values
-  ('platform_fees', '{"platform_fee_zmw": 3, "default_entry_fee_zmw": 23, "competition_fee_zmw": 20}'::jsonb),
-  ('scoring', '{"points_per_correct": 5}'::jsonb)
-on conflict (key) do nothing;
-
--- Ensure profiles has phone column
-alter table public.profiles add column if not exists phone text;
-create unique index if not exists profiles_phone_unique on public.profiles (phone) where phone is not null;
-
--- Balance helpers
-create or replace function public.deduct_balance(uid uuid, amount numeric)
-returns void language plpgsql security definer set search_path = public as $$
+-- wipe every old policy so nothing permissive survives from earlier versions
+do $$
+declare r record;
 begin
-  update public.profiles
-  set balance_zmw = balance_zmw - amount, updated_at = now()
-  where id = uid and balance_zmw >= amount;
-  if not found then
-    raise exception 'Insufficient balance';
+  for r in select schemaname, tablename, policyname from pg_policies where schemaname = 'public' loop
+    execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
+  end loop;
+end $$;
+
+create policy profiles_select on public.profiles for select using (id = auth.uid() or public.is_admin());
+create policy profiles_update_own on public.profiles for update using (id = auth.uid()) with check (id = auth.uid());
+
+create policy categories_read on public.categories for select using (true);
+create policy categories_admin on public.categories for all using (public.is_admin()) with check (public.is_admin());
+create policy banners_read on public.banners for select using (true);
+create policy banners_admin on public.banners for all using (public.is_admin()) with check (public.is_admin());
+create policy rewards_read on public.rewards for select using (true);
+create policy rewards_admin on public.rewards for all using (public.is_admin()) with check (public.is_admin());
+create policy settings_read on public.app_settings for select using (true);
+create policy settings_admin on public.app_settings for all using (public.is_admin()) with check (public.is_admin());
+
+-- Questions + quizzes: admin only. Players get questions through the match flow.
+create policy questions_admin on public.questions for all using (public.is_admin()) with check (public.is_admin());
+create policy quizzes_admin on public.quizzes for all using (public.is_admin()) with check (public.is_admin());
+
+-- Read-only for participants. No client writes at all.
+create policy competitions_read on public.competitions for select
+  using (player1_id = auth.uid() or player2_id = auth.uid() or public.is_admin());
+create policy answers_read on public.answers for select using (player_id = auth.uid() or public.is_admin());
+create policy reward_tx_read on public.reward_transactions for select using (user_id = auth.uid() or public.is_admin());
+create policy payment_tx_read on public.payment_transactions for select using (user_id = auth.uid() or public.is_admin());
+
+create policy notif_read on public.notifications for select using (user_id = auth.uid() or user_id is null or public.is_admin());
+create policy notif_update_own on public.notifications for update using (user_id = auth.uid());
+
+-- Column-level locks: players may only edit harmless profile fields
+revoke insert, update, delete on public.profiles from anon, authenticated;
+grant update (full_name, avatar_url, push_token, push_enabled) on public.profiles to authenticated;
+revoke insert, update, delete on public.competitions, public.answers, public.reward_transactions,
+  public.payment_transactions, public.match_queue from anon, authenticated;
+revoke all on public.match_queue from anon, authenticated;
+revoke insert, delete on public.notifications from anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- 9. Function permissions
+-- ---------------------------------------------------------------------------
+do $$
+declare f text;
+begin
+  -- engine functions: Edge Functions (service_role) only
+  foreach f in array array[
+    '_notify(uuid,text,text,text,jsonb)', '_debit(uuid,numeric,uuid,text)', '_credit(uuid,numeric,uuid,text)',
+    'begin_deposit(uuid,numeric,text,text)', 'begin_withdrawal(uuid,numeric,text,text)',
+    'settle_payment(text,text,jsonb,text)', '_entry_fee()', '_enqueue(uuid,numeric)', '_try_pair()',
+    '_advance(uuid)', '_finalize(uuid)', '_expire_pending(uuid,text)', 'sweep_matches()',
+    'find_match(uuid)', 'cancel_search(uuid)', 'respond_match(uuid,uuid,boolean)',
+    'submit_answer(uuid,uuid,int,int)', 'match_state(uuid)', 'match_result(uuid,uuid)'
+  ] loop
+    execute format('revoke all on function public.%s from public, anon, authenticated', f);
+    execute format('grant execute on function public.%s to service_role', f);
+  end loop;
+  -- is_admin() and setting() stay callable by everyone: RLS policies use them
+  -- player / admin RPCs (admin ones check is_admin() inside)
+  foreach f in array array[
+    'get_leaderboard(int)', 'get_wallet_history(int)', 'admin_stats()', 'admin_list_transactions(text,int)',
+    'admin_list_matches(int)', 'admin_send_announcement(text,text)'
+  ] loop
+    execute format('revoke all on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated, service_role', f);
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 10. Realtime (instant match updates + notifications) and storage buckets
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  begin alter publication supabase_realtime add table public.competitions; exception when others then null; end;
+  begin alter publication supabase_realtime add table public.notifications; exception when others then null; end;
+  begin alter publication supabase_realtime add table public.profiles; exception when others then null; end;
+end $$;
+
+insert into storage.buckets (id, name, public) values
+  ('banners', 'banners', true), ('rewards', 'rewards', true), ('avatars', 'avatars', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "public read media" on storage.objects;
+create policy "public read media" on storage.objects for select
+  using (bucket_id in ('banners', 'rewards', 'avatars'));
+drop policy if exists "admin write media" on storage.objects;
+create policy "admin write media" on storage.objects for all
+  using (bucket_id in ('banners', 'rewards') and public.is_admin())
+  with check (bucket_id in ('banners', 'rewards') and public.is_admin());
+drop policy if exists "users write own avatar" on storage.objects;
+create policy "users write own avatar" on storage.objects for all
+  using (bucket_id = 'avatars' and auth.uid() is not null)
+  with check (bucket_id = 'avatars' and auth.uid() is not null);
+
+-- ---------------------------------------------------------------------------
+-- 11. Background sweeper (optional but recommended)
+--     Enable first: Dashboard → Database → Extensions → pg_cron
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.unschedule(jobid) from cron.job where jobname = 'brainspeed-sweep';
+    perform cron.schedule('brainspeed-sweep', '* * * * *', 'select public.sweep_matches()');
   end if;
-end;
-$$;
+exception when others then
+  raise notice 'pg_cron not configured: %', sqlerrm;
+end $$;
 
-create or replace function public.credit_balance(uid uuid, amount numeric)
-returns void language plpgsql security definer set search_path = public as $$
-begin
-  update public.profiles
-  set balance_zmw = balance_zmw + amount, updated_at = now()
-  where id = uid;
-end;
-$$;
-
-create or replace function public.increment_wins(uid uuid)
-returns void language plpgsql security definer set search_path = public as $$
-begin
-  update public.profiles set wins = wins + 1, updated_at = now() where id = uid;
-end;
-$$;
-
-create or replace function public.increment_losses(uid uuid)
-returns void language plpgsql security definer set search_path = public as $$
-begin
-  update public.profiles set losses = losses + 1, updated_at = now() where id = uid;
-end;
-$$;
+-- Make yourself admin (replace the email), run once:
+--   update public.profiles set role = 'admin' where email = 'you@example.com';

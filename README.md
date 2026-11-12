@@ -1,4 +1,6 @@
-# Brainspeed
+# Quivanta Quiz (Brainspeed)
+
+> **Start here: [SETUP.md](./SETUP.md)** — database, Africa's Talking SMS, Lipila payments, secrets and EAS.
 
 Think fast. Compete smart. Get rewarded.
 

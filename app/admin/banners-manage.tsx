@@ -156,7 +156,7 @@ export default function AdminBanners() {
     <Screen
       scroll
       contentStyle={{}}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.gold} />}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
     >
       <Header title="Banners" showBack />
       <Card style={styles.card}>
@@ -226,7 +226,7 @@ export default function AdminBanners() {
                   {active ? 'Active' : 'Hidden'} · order {b.sort_order}
                 </Text>
               </View>
-              <Switch value={Boolean(active)} onValueChange={() => toggleActive(b)} trackColor={{ true: Colors.gold }} />
+              <Switch value={Boolean(active)} onValueChange={() => toggleActive(b)} trackColor={{ true: Colors.primary }} />
               <TouchableOpacity onPress={() => move(b, -1)} disabled={i === 0}>
                 <Ionicons name="arrow-up" size={18} color={Colors.text} />
               </TouchableOpacity>
@@ -241,7 +241,7 @@ export default function AdminBanners() {
                   setImageUri(b.image_url || null);
                 }}
               >
-                <Ionicons name="create-outline" size={20} color={Colors.goldDark} />
+                <Ionicons name="create-outline" size={20} color={Colors.primaryDark} />
               </TouchableOpacity>
               <TouchableOpacity onPress={() => onDelete(b)}>
                 <Ionicons name="trash-outline" size={20} color={Colors.error} />

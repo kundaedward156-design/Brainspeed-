@@ -7,7 +7,7 @@ export type UserRole = 'player' | 'admin';
 export interface Profile {
   id: string;
   full_name: string;
-  email: string;
+  email?: string | null;
   phone?: string | null;
   avatar_url?: string | null;
   role?: UserRole;
@@ -15,6 +15,9 @@ export interface Profile {
   losses?: number;
   total_score?: number;
   balance_zmw?: number;
+  draws?: number;
+  games_played?: number;
+  correct_answers?: number;
   push_enabled?: boolean;
   created_at?: string;
   updated_at?: string;
@@ -144,4 +147,98 @@ export interface Quiz {
   entry_fee_zmw?: number;
   is_active?: boolean;
   created_at?: string;
+}
+
+// ───────────── Server-driven match & wallet types ─────────────
+
+export interface AppLinks {
+  telegram_url: string;
+  privacy_url: string;
+  terms_url: string;
+  support_email: string;
+  whatsapp_url: string;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  user_id: string;
+  name: string;
+  avatar_url?: string | null;
+  games_played: number;
+  wins: number;
+  points: number;
+}
+
+export interface WinnerEntry {
+  name: string;
+  avatar_url?: string | null;
+  prize: number;
+  completed_at: string;
+}
+
+export interface LeaderboardData {
+  top: LeaderboardEntry[];
+  winners: WinnerEntry[];
+  updated_at?: string;
+}
+
+export interface WalletEntry {
+  id: string;
+  type: 'deposit' | 'withdraw' | 'entry_fee' | 'entry_refund' | 'prize' | string;
+  amount: number;
+  status: string;
+  created_at: string;
+  detail?: string | null;
+}
+
+export interface MatchPlayerLive {
+  name?: string;
+  avatar_url?: string | null;
+  score?: number;
+  answered?: boolean;
+  selected?: number | null;
+  correct?: boolean | null;
+  points?: number | null;
+  correct_index?: number | null;
+}
+
+export interface MatchState {
+  status: 'idle' | 'searching' | 'pending_accept' | 'active' | 'completed';
+  server_time: number;
+  competition_id?: string;
+  // searching
+  waited_s?: number;
+  fee?: number;
+  // pending_accept
+  prize?: number;
+  deadline?: number;
+  i_accepted?: boolean;
+  // active
+  index?: number;
+  total?: number;
+  question_started_at?: number;
+  question_seconds?: number;
+  question?: { id: string; text: string; image_url?: string | null; options: string[] };
+  me?: MatchPlayerLive;
+  opponent?: MatchPlayerLive;
+  last_answer?: { index: number; selected: number; correct: boolean; correct_index: number; points: number; time_ms: number };
+}
+
+export interface MatchResultPlayer {
+  id: string;
+  name: string;
+  avatar_url?: string | null;
+  score: number;
+  correct: number;
+  time_ms: number;
+}
+
+export interface MatchResult {
+  competition_id: string;
+  is_draw: boolean;
+  winner_id?: string | null;
+  prize: number;
+  total_questions: number;
+  me: MatchResultPlayer;
+  opponent: MatchResultPlayer;
 }

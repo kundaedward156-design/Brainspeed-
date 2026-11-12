@@ -1,280 +1,93 @@
 import React, { useCallback, useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TextInput,
-  Alert,
-  TouchableOpacity,
-  RefreshControl,
-} from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Switch } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '@/components/ui/Screen';
 import { Header } from '@/components/ui/Header';
+import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
-import { LoadingState } from '@/components/ui/LoadingState';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { Colors, Spacing, Typography, BorderRadius } from '@/constants/theme';
-import { competitionsService } from '@/services/competitions';
-import type { Competition, QuizQuestion } from '@/types';
+import { adminService, type AdminQuestion } from '@/services/admin';
+
+const blank = { text: '', options: ['', '', '', ''], correct_index: 0 };
 
 export default function AdminQuestions() {
-  const [quizzes, setQuizzes] = useState<Competition[]>([]);
-  const [selectedQuiz, setSelectedQuiz] = useState<string | null>(null);
-  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<AdminQuestion[]>([]);
+  const [editing, setEditing] = useState<(Partial<AdminQuestion> & typeof blank) | null>(null);
   const [saving, setSaving] = useState(false);
-  const [question, setQuestion] = useState('');
-  const [options, setOptions] = useState(['', '', '', '']);
-  const [correct, setCorrect] = useState('');
-  const [editId, setEditId] = useState<string | null>(null);
 
-  const loadQuizzes = useCallback(async () => {
-    setLoading(true);
-    const res = await competitionsService.listAll();
-    setQuizzes(res.data);
-    setLoading(false);
+  const load = useCallback(async () => {
+    const r = await adminService.listQuestions();
+    if (r.error) Alert.alert('Error', r.error);
+    setRows(r.data);
   }, []);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const loadQuestions = useCallback(async (quizId: string) => {
-    const res = await competitionsService.listQuestions(quizId);
-    setQuestions(res.data);
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadQuizzes();
-    }, [loadQuizzes])
-  );
-
-  const selectQuiz = async (id: string) => {
-    setSelectedQuiz(id);
-    setEditId(null);
-    await loadQuestions(id);
-  };
-
-  const resetForm = () => {
-    setQuestion('');
-    setOptions(['', '', '', '']);
-    setCorrect('');
-    setEditId(null);
-  };
-
-  const setOptionAt = (i: number, v: string) => {
-    setOptions((prev) => {
-      const next = [...prev];
-      next[i] = v;
-      return next;
-    });
-  };
-
-  const addOption = () => setOptions((prev) => [...prev, '']);
-  const removeOption = (i: number) => {
-    if (options.length <= 2) {
-      Alert.alert('Need options', 'Keep at least 2 options.');
-      return;
-    }
-    setOptions((prev) => prev.filter((_, idx) => idx !== i));
-  };
-
-  const onSave = async () => {
-    if (!selectedQuiz) {
-      Alert.alert('Pick a quiz', 'Select a quiz first.');
-      return;
-    }
-    const clean = options.map((o) => o.trim()).filter(Boolean);
-    if (!question.trim() || clean.length < 2) {
-      Alert.alert('Incomplete', 'Enter a question and at least 2 options.');
-      return;
-    }
-    if (!correct.trim() || !clean.includes(correct.trim())) {
-      Alert.alert('Correct answer', 'Correct answer must exactly match one option.');
-      return;
-    }
+  const save = async () => {
+    if (!editing) return;
+    const options = editing.options.map((o) => o.trim());
+    if (!editing.text.trim()) return Alert.alert('Question', 'Write the question text.');
+    if (options.some((o) => !o)) return Alert.alert('Options', 'Fill in all four answer options.');
     setSaving(true);
-    if (editId) {
-      const { error } = await competitionsService.updateQuestion(editId, {
-        question: question.trim(),
-        options: clean,
-        correct_answer: correct.trim(),
-      });
-      setSaving(false);
-      if (error) return Alert.alert('Error', error);
-      Alert.alert('Saved', 'Question updated.');
-    } else {
-      const { error } = await competitionsService.addQuestion({
-        competition_id: selectedQuiz,
-        question: question.trim(),
-        options: clean,
-        position: questions.length,
-        correct_answer: correct.trim(),
-      });
-      setSaving(false);
-      if (error) return Alert.alert('Error', error);
-      Alert.alert('Added', 'Question and answer key saved.');
-    }
-    resetForm();
-    loadQuestions(selectedQuiz);
+    const { error } = await adminService.saveQuestion({ ...editing, text: editing.text.trim(), options, correct_index: editing.correct_index });
+    setSaving(false);
+    if (error) return Alert.alert('Error', error);
+    setEditing(null);
+    load();
   };
 
-  const onEdit = (q: QuizQuestion) => {
-    setEditId(q.id);
-    setQuestion(q.question);
-    setOptions(q.options.length ? q.options : ['', '']);
-    setCorrect('');
-  };
-
-  const onDelete = (q: QuizQuestion) => {
-    Alert.alert('Delete question?', q.question.slice(0, 60), [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          const { error } = await competitionsService.deleteQuestion(q.id);
-          if (error) Alert.alert('Error', error);
-          else if (selectedQuiz) loadQuestions(selectedQuiz);
-        },
-      },
-    ]);
-  };
+  if (editing) {
+    return (
+      <Screen scroll keyboardAvoid>
+        <Header title={editing.id ? 'Edit question' : 'New question'} showBack onBack={() => setEditing(null)} />
+        <Input label="Question" placeholder="Type the question" multiline value={editing.text} onChangeText={(v) => setEditing({ ...editing, text: v })} />
+        <Text style={styles.label}>Answer options — tap the circle to mark the correct one</Text>
+        {editing.options.map((o, i) => (
+          <View key={i} style={styles.optRow}>
+            <TouchableOpacity onPress={() => setEditing({ ...editing, correct_index: i })} hitSlop={10}>
+              <Ionicons name={editing.correct_index === i ? 'checkmark-circle' : 'ellipse-outline'} size={28} color={editing.correct_index === i ? Colors.success : Colors.textMuted} />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Input placeholder={`Option ${String.fromCharCode(65 + i)}`} value={o} onChangeText={(v) => setEditing({ ...editing, options: editing.options.map((x, j) => (j === i ? v : x)) })} />
+            </View>
+          </View>
+        ))}
+        <Button title="Save question" size="lg" fullWidth loading={saving} onPress={save} />
+      </Screen>
+    );
+  }
 
   return (
-    <Screen
-      scroll
-      contentStyle={{}}
-      refreshControl={
-        <RefreshControl
-          refreshing={loading}
-          onRefresh={() => {
-            loadQuizzes();
-            if (selectedQuiz) loadQuestions(selectedQuiz);
-          }}
-          tintColor={Colors.gold}
-        />
-      }
-    >
-      <Header title="Questions" showBack />
-      <Text style={styles.hint}>Pick a quiz, then add questions. Correct answer is stored only in quiz_answer_key.</Text>
-
-      <Text style={styles.section}>Quiz</Text>
-      <View style={styles.chips}>
-        {quizzes.map((q) => (
-          <TouchableOpacity
-            key={q.id}
-            style={[styles.chip, selectedQuiz === q.id && styles.chipOn]}
-            onPress={() => selectQuiz(q.id)}
-          >
-            <Text style={styles.chipText} numberOfLines={1}>{q.title}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      {selectedQuiz ? (
-        <>
-          <Card style={styles.card}>
-            <Text style={styles.label}>{editId ? 'Edit question' : 'Add Question'}</Text>
-            <TextInput
-              style={[styles.input, { minHeight: 72 }]}
-              placeholder="Question text"
-              placeholderTextColor={Colors.textMuted}
-              value={question}
-              onChangeText={setQuestion}
-              multiline
-            />
-            {options.map((opt, i) => (
-              <View key={i} style={styles.optRow}>
-                <TextInput
-                  style={[styles.input, { flex: 1, marginBottom: 0 }]}
-                  placeholder={`Option ${i + 1}`}
-                  placeholderTextColor={Colors.textMuted}
-                  value={opt}
-                  onChangeText={(t) => setOptionAt(i, t)}
-                />
-                <TouchableOpacity onPress={() => setCorrect(opt.trim())} style={styles.markBtn}>
-                  <Ionicons
-                    name={correct === opt.trim() && opt.trim() ? 'checkmark-circle' : 'ellipse-outline'}
-                    size={24}
-                    color={correct === opt.trim() && opt.trim() ? Colors.success : Colors.textMuted}
-                  />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => removeOption(i)}>
-                  <Ionicons name="close" size={22} color={Colors.error} />
-                </TouchableOpacity>
-              </View>
-            ))}
-            <Button title="Add option row" variant="outline" size="sm" onPress={addOption} style={{ marginBottom: Spacing.md }} />
-            <TextInput
-              style={styles.input}
-              placeholder="Correct answer (must match an option exactly)"
-              placeholderTextColor={Colors.textMuted}
-              value={correct}
-              onChangeText={setCorrect}
-            />
-            <Button title={editId ? 'Update Question' : 'Add Question'} onPress={onSave} loading={saving} fullWidth />
-            {editId ? <Button title="Cancel" variant="ghost" onPress={resetForm} fullWidth style={{ marginTop: 8 }} /> : null}
-          </Card>
-
-          {questions.map((q) => (
-            <View key={q.id} style={styles.row}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle} numberOfLines={2}>{q.question}</Text>
-                <Text style={styles.meta}>{q.options.length} options · pos {q.position}</Text>
-              </View>
-              <TouchableOpacity onPress={() => onEdit(q)}>
-                <Ionicons name="create-outline" size={22} color={Colors.gold} />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => onDelete(q)}>
-                <Ionicons name="trash-outline" size={22} color={Colors.error} />
-              </TouchableOpacity>
-            </View>
-          ))}
-        </>
-      ) : loading ? (
-        <LoadingState />
+    <Screen scroll>
+      <Header title="Questions" showBack right={<TouchableOpacity onPress={() => setEditing({ ...blank })}><Ionicons name="add-circle" size={30} color={Colors.primary} /></TouchableOpacity>} />
+      <Text style={styles.hint}>Only active questions are used in matches. Players never see the correct answer until they have answered.</Text>
+      {rows.length === 0 ? (
+        <EmptyState icon="help-circle-outline" title="No questions yet" message="Tap + to add your first question." />
       ) : (
-        <Text style={styles.hint}>Select a quiz above to manage its questions.</Text>
+        <View style={styles.list}>
+          {rows.map((q, i) => (
+            <TouchableOpacity key={q.id} style={[styles.row, i < rows.length - 1 && styles.divider]} onPress={() => setEditing({ id: q.id, category_id: q.category_id, text: q.text, options: [...(q.options || []), '', '', '', ''].slice(0, 4), correct_index: q.correct_index })}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.qText} numberOfLines={2}>{q.text}</Text>
+                <Text style={styles.ans}>Answer: {q.options?.[q.correct_index]}</Text>
+              </View>
+              <Switch value={q.is_active} trackColor={{ true: Colors.primary }} onValueChange={async (v) => { await adminService.setQuestionActive(q.id, v); load(); }} />
+            </TouchableOpacity>
+          ))}
+        </View>
       )}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  hint: { color: Colors.textMuted, marginBottom: Spacing.md, fontSize: Typography.size.sm },
-  section: { color: Colors.text, fontWeight: '700', marginBottom: Spacing.sm },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: Spacing.lg },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: BorderRadius.full,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    maxWidth: '100%',
-  },
-  chipOn: { backgroundColor: Colors.gold },
-  chipText: { color: Colors.text, fontWeight: '600', fontSize: 12 },
-  card: { marginBottom: Spacing.lg },
-  label: { color: Colors.text, fontWeight: '700', marginBottom: Spacing.md },
-  input: {
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: BorderRadius.md,
-    padding: Spacing.md,
-    color: Colors.text,
-    marginBottom: Spacing.md,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  optRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: Spacing.md },
-  markBtn: { padding: 4 },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    marginBottom: Spacing.sm,
-  },
-  rowTitle: { color: Colors.text, fontWeight: '600' },
-  meta: { color: Colors.textSecondary, fontSize: Typography.size.xs, marginTop: 2 },
+  hint: { color: Colors.textSecondary, fontSize: Typography.size.sm, marginBottom: Spacing.lg, lineHeight: 19 },
+  label: { color: Colors.textSecondary, fontSize: Typography.size.sm, fontWeight: '600', marginBottom: Spacing.md },
+  optRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md, marginTop: 2 },
+  list: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, paddingHorizontal: Spacing.lg, borderWidth: 1, borderColor: Colors.border },
+  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.md },
+  divider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border },
+  qText: { color: Colors.text, fontWeight: '600' },
+  ans: { color: Colors.success, fontSize: Typography.size.xs, marginTop: 3, fontWeight: '600' },
 });

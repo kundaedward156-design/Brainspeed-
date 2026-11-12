@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import type { Profile } from '@/types';
 import { authService } from '@/services/auth';
 import { registerForPushNotifications } from '@/services/push';
@@ -21,47 +21,59 @@ const AuthContext = createContext<AuthContextValue>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const pushRegistered = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     const { profile: p } = await authService.getCurrentProfile();
     setProfile(p);
-      if (p?.id) registerForPushNotifications(p.id).catch(() => {});
+    if (p?.id && pushRegistered.current !== p.id) {
+      pushRegistered.current = p.id;
+      registerForPushNotifications(p.id).catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
     let mounted = true;
-
     (async () => {
-      // Restore persisted session from AsyncStorage on app open
       await refresh();
       if (mounted) setLoading(false);
     })();
 
-    if (!supabase) {
-      return () => {
-        mounted = false;
-      };
-    }
+    if (!supabase) return () => { mounted = false; };
 
-    // Keep profile in sync on login / logout / token refresh
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'SIGNED_OUT') {
+        pushRegistered.current = null;
         if (mounted) setProfile(null);
         return;
       }
-      await refresh();
+      // never await Supabase calls inside this callback (can deadlock) — defer
+      setTimeout(() => { refresh(); }, 0);
     });
-
     return () => {
       mounted = false;
       sub.subscription.unsubscribe();
     };
   }, [refresh]);
 
+  // Live wallet balance & stats: the server changes the profile row, we just listen.
+  useEffect(() => {
+    if (!supabase || !profile?.id) return;
+    const channel = supabase
+      .channel(`profile-${profile.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${profile.id}` },
+        (payload) => setProfile((prev) => (prev ? { ...prev, ...(payload.new as Profile) } : prev))
+      )
+      .subscribe();
+    return () => {
+      supabase?.removeChannel(channel);
+    };
+  }, [profile?.id]);
+
   return (
-    <AuthContext.Provider value={{ profile, loading, refresh, setProfile }}>
-      {children}
-    </AuthContext.Provider>
+    <AuthContext.Provider value={{ profile, loading, refresh, setProfile }}>{children}</AuthContext.Provider>
   );
 }
 

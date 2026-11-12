@@ -10,7 +10,7 @@ export default function MaintenanceScreen() {
     <Screen contentStyle={styles.wrap}>
       <Text style={styles.title}>Under maintenance</Text>
       <Text style={styles.body}>
-        {message || 'Brainspeed is temporarily unavailable. Please try again later.'}
+        {message || 'Quivanta Quiz is temporarily unavailable. Please try again later.'}
       </Text>
     </Screen>
   );

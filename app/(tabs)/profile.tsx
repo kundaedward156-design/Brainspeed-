@@ -1,146 +1,85 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { View, Text, StyleSheet, Alert } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Screen } from '@/components/ui/Screen';
+import { Header } from '@/components/ui/Header';
+import { Avatar } from '@/components/ui/Avatar';
+import { Button } from '@/components/ui/Button';
+import { LinkRow } from '@/components/ui/LinkRow';
 import { Colors, Spacing, Typography, BorderRadius } from '@/constants/theme';
+import { AppConfig } from '@/constants/config';
 import { authService } from '@/services/auth';
 import { adminService } from '@/services/admin';
 import { useAuth } from '@/contexts/AuthContext';
-import type { Profile } from '@/types';
+import { useLinks, openLink, openSupport } from '@/hooks/useLinks';
+import { toLocalZm } from '@/utils/phone';
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { profile: ctxProfile, refresh } = useAuth();
-  const [profile, setProfile] = useState<Profile | null>(ctxProfile);
+  const { profile, refresh } = useAuth();
+  const links = useLinks();
   const [isAdmin, setIsAdmin] = useState(false);
-
-  const load = useCallback(async () => {
-    await refresh();
-    const { profile: p } = await authService.getCurrentProfile();
-    setProfile(p);
-    const admin = await adminService.isAdmin();
-    setIsAdmin(admin);
-  }, [refresh]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [load])
+      refresh();
+      adminService.isAdmin().then(setIsAdmin);
+    }, [refresh])
   );
 
-  const name = profile?.full_name ?? 'Player';
+  const logout = () =>
+    Alert.alert('Log out', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Log out', style: 'destructive', onPress: async () => { await authService.logout(); router.replace('/intro'); } },
+    ]);
+
+  const played = profile?.games_played ?? 0;
   const wins = profile?.wins ?? 0;
-  const losses = profile?.losses ?? 0;
-  const played = wins + losses;
-  const winRate = played > 0 ? Math.round((wins / played) * 100) : 0;
-  const totalScore = profile?.total_score ?? 0;
-  const balance = Number(profile?.balance_zmw ?? 0);
-  const avatarUrl = profile?.avatar_url || null;
-  const initial = (name || 'E')[0].toUpperCase();
+  const rate = played > 0 ? Math.round((wins / played) * 100) : 0;
 
   return (
     <Screen scroll>
-      <View style={styles.headerRow}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={24} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>My Profile</Text>
-        <View style={{ width: 24 }} />
+      <Header title="Profile" />
+
+      <View style={styles.top}>
+        <Avatar name={profile?.full_name} uri={profile?.avatar_url} size={84} />
+        <Text style={styles.name}>{profile?.full_name || 'Player'}</Text>
+        <Text style={styles.contact}>{profile?.phone ? toLocalZm(profile.phone) : profile?.email}</Text>
       </View>
 
-      <View style={styles.profileCard}>
-        <LinearGradient
-          colors={[Colors.gold, Colors.orange]}
-          style={styles.avatarCircle}
-        >
-          {avatarUrl ? (
-            <Image source={{ uri: avatarUrl }} style={styles.avatarImg} />
-          ) : (
-            <Text style={styles.avatarLetter}>{initial}</Text>
-          )}
-        </LinearGradient>
-        <Text style={styles.name}>{name}</Text>
-        <TouchableOpacity
-          style={styles.editBtn}
-          onPress={() => router.push('/settings')}
-          activeOpacity={0.85}
-        >
-          <LinearGradient
-            colors={[Colors.gold, Colors.orange]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.editBtnGrad}
-          >
-            <Ionicons name="pencil" size={14} color="#000" />
-            <Text style={styles.editBtnText}>Edit Profile</Text>
-          </LinearGradient>
-        </TouchableOpacity>
+      <View style={styles.stats}>
+        <Stat label="Played" value={played} />
+        <Stat label="Wins" value={wins} />
+        <Stat label="Win rate" value={`${rate}%`} />
+        <Stat label="Points" value={profile?.total_score ?? 0} />
       </View>
 
-      <View style={styles.balanceCard}>
-        <View style={styles.balanceHeader}>
-          <Ionicons name="wallet-outline" size={18} color={Colors.gold} />
-          <Text style={styles.balanceLabel}>AVAILABLE BALANCE</Text>
-        </View>
-        <Text style={styles.balanceValue}>ZMW {balance.toFixed(0)}</Text>
-        <View style={styles.balanceActions}>
-          <TouchableOpacity
-            style={styles.depositBtn}
-            onPress={() => router.push('/deposit')}
-            activeOpacity={0.85}
-          >
-            <LinearGradient
-              colors={[Colors.gold, Colors.orange]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.actionGrad}
-            >
-              <Ionicons name="arrow-down" size={16} color="#000" />
-              <Text style={styles.actionTextDark}>Deposit</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.withdrawBtn}
-            onPress={() => router.push('/withdraw')}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-up" size={16} color={Colors.text} />
-            <Text style={styles.actionText}>Withdraw</Text>
-          </TouchableOpacity>
-        </View>
+      <Text style={styles.section}>Account</Text>
+      <View style={styles.card}>
+        <LinkRow icon="person-outline" label="Edit profile" onPress={() => router.push('/settings')} />
+        <LinkRow icon="notifications-outline" label="Notifications" onPress={() => router.push('/notifications')} />
+        <LinkRow icon="wallet-outline" label="Wallet & transactions" onPress={() => router.push('/(tabs)/wallet')} last={!isAdmin} />
+        {isAdmin ? <LinkRow icon="shield-checkmark-outline" label="Admin dashboard" hint="Manage players, questions and payments" onPress={() => router.push('/admin')} last /> : null}
       </View>
 
-      <View style={styles.statsCard}>
-        <View style={styles.statsHeader}>
-          <Ionicons name="trophy-outline" size={18} color={Colors.gold} />
-          <Text style={styles.statsTitle}>COMPETITION STATS</Text>
-        </View>
-        <View style={styles.statsGrid}>
-          <StatItem icon="game-controller-outline" value={String(played)} label="PLAYED" />
-          <StatItem icon="ribbon-outline" value={String(wins)} label="WON" />
-          <StatItem icon="close-circle-outline" value={String(losses)} label="LOST" />
-          <StatItem icon="trending-up" value={`${winRate}%`} label="WIN RATE" />
-          <StatItem icon="checkmark-circle-outline" value={String(totalScore)} label="CORRECT" />
-          <StatItem icon="trophy" value={String(totalScore * 5)} label="POINTS" />
-        </View>
+      <Text style={styles.section}>Community & legal</Text>
+      <View style={styles.card}>
+        <LinkRow icon="paper-plane-outline" label="Telegram community" onPress={() => openLink(links.telegram_url, 'Telegram community')} />
+        <LinkRow icon="logo-whatsapp" label="WhatsApp" onPress={() => openLink(links.whatsapp_url, 'WhatsApp')} />
+        <LinkRow icon="document-text-outline" label="Privacy Policy" onPress={() => openLink(links.privacy_url, 'Privacy Policy')} />
+        <LinkRow icon="reader-outline" label="Terms of Service" onPress={() => openLink(links.terms_url, 'Terms of Service')} />
+        <LinkRow icon="mail-outline" label="Contact support" hint={links.support_email || undefined} onPress={() => openSupport(links.support_email)} last />
       </View>
 
-      {isAdmin && (
-        <TouchableOpacity style={styles.adminBtn} onPress={() => router.push('/admin')}>
-          <Ionicons name="shield-outline" size={20} color={Colors.gold} />
-          <Text style={styles.adminText}>Admin Dashboard</Text>
-        </TouchableOpacity>
-      )}
+      <Button title="Log out" variant="outline" fullWidth onPress={logout} style={{ marginTop: Spacing.sm }} />
+      <Text style={styles.version}>{AppConfig.name}</Text>
     </Screen>
   );
 }
 
-function StatItem({ icon, value, label }: { icon: keyof typeof Ionicons.glyphMap; value: string; label: string }) {
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
-    <View style={styles.statItem}>
-      <Ionicons name={icon} size={18} color={Colors.gold} />
+    <View style={styles.stat}>
       <Text style={styles.statValue}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
@@ -148,111 +87,14 @@ function StatItem({ icon, value, label }: { icon: keyof typeof Ionicons.glyphMap
 }
 
 const styles = StyleSheet.create({
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: Spacing.lg,
-    paddingHorizontal: 4,
-  },
-  headerTitle: { color: Colors.text, fontSize: Typography.size.lg, fontWeight: '700' },
-  profileCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.xxl,
-    alignItems: 'center',
-    marginBottom: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  avatarCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing.md,
-    overflow: 'hidden',
-  },
-  avatarImg: { width: '100%', height: '100%' },
-  avatarLetter: { color: '#000', fontSize: 32, fontWeight: '800' },
-  name: { color: Colors.text, fontSize: Typography.size.xl, fontWeight: '700', marginBottom: Spacing.md },
-  editBtn: { borderRadius: BorderRadius.md, overflow: 'hidden' },
-  editBtnGrad: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-  editBtnText: { color: '#000', fontWeight: '700', fontSize: Typography.size.sm },
-  balanceCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  balanceHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  balanceLabel: { color: Colors.textMuted, fontSize: Typography.size.xs, fontWeight: '600', letterSpacing: 1 },
-  balanceValue: { color: Colors.text, fontSize: Typography.size.xxxl, fontWeight: '800', marginBottom: Spacing.md },
-  balanceActions: { flexDirection: 'row', gap: 10 },
-  depositBtn: { flex: 1, borderRadius: BorderRadius.md, overflow: 'hidden' },
-  actionGrad: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-  },
-  actionTextDark: { color: '#000', fontWeight: '700' },
-  withdrawBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surfaceElevated,
-  },
-  actionText: { color: Colors.text, fontWeight: '700' },
-  statsCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  statsHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: Spacing.lg },
-  statsTitle: { color: Colors.textMuted, fontSize: Typography.size.xs, fontWeight: '600', letterSpacing: 1 },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  statItem: {
-    width: '30%',
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.md,
-    padding: Spacing.md,
-    alignItems: 'center',
-  },
-  statValue: { color: Colors.text, fontWeight: '800', fontSize: Typography.size.lg, marginTop: 4 },
-  statLabel: { color: Colors.textMuted, fontSize: 10, fontWeight: '600', marginTop: 2 },
-  adminBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    padding: Spacing.lg,
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  adminText: { color: Colors.gold, fontWeight: '700' },
+  top: { alignItems: 'center', marginBottom: Spacing.xl },
+  name: { color: Colors.text, fontSize: Typography.size.xxl, fontWeight: '800', marginTop: Spacing.md },
+  contact: { color: Colors.textSecondary, marginTop: 4 },
+  stats: { flexDirection: 'row', backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, borderWidth: 1, borderColor: Colors.border, paddingVertical: Spacing.lg, marginBottom: Spacing.xl },
+  stat: { flex: 1, alignItems: 'center' },
+  statValue: { color: Colors.primary, fontSize: Typography.size.xl, fontWeight: '800' },
+  statLabel: { color: Colors.textMuted, fontSize: Typography.size.xs, marginTop: 2, fontWeight: '600' },
+  section: { color: Colors.textMuted, fontSize: Typography.size.xs, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginBottom: Spacing.sm },
+  card: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, paddingHorizontal: Spacing.lg, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.xl },
+  version: { color: Colors.textMuted, textAlign: 'center', fontSize: Typography.size.xs, marginTop: Spacing.lg, marginBottom: Spacing.lg },
 });

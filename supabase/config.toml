@@ -1,0 +1,20 @@
+# Supabase CLI config. `supabase functions deploy` reads the verify_jwt flags from here.
+project_id = "brainspeed"
+
+# Called by Supabase Auth / Lipila / a Database Webhook (no user JWT) — they verify their own secret.
+[functions.send-sms]
+verify_jwt = false
+[functions.lipila-webhook]
+verify_jwt = false
+[functions.notify-push]
+verify_jwt = false
+
+# Everything else requires a signed-in user (default).
+[functions.lipila-deposit]
+verify_jwt = true
+[functions.lipila-payout]
+verify_jwt = true
+[functions.lipila-status]
+verify_jwt = true
+[functions.match]
+verify_jwt = true

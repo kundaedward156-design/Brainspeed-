@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Brainspeed",
+    "name": "Quivanta Quiz",
     "slug": "edwardkunda156",
     "owner": "edwardkunda156s-team",
     "version": "1.0.0",
@@ -9,11 +9,14 @@
     "scheme": "brainspeed",
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
-    "platforms": ["ios", "android"],
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0A1628"
+      "image": "./assets/splash-full.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#EDE7FB"
     },
     "updates": {
       "url": "https://u.expo.dev/b845ebd3-bb3d-46b3-b194-a3f7720091d3"
@@ -32,14 +35,15 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0A1628"
+        "backgroundColor": "#EDE7FB"
       },
       "package": "com.brainspeed.app",
       "versionCode": 1,
       "permissions": [
         "INTERNET",
         "ACCESS_NETWORK_STATE",
-        "READ_MEDIA_IMAGES"
+        "READ_MEDIA_IMAGES",
+        "POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -69,7 +73,14 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Brainspeed to access your photos for banner and reward images."
+          "photosPermission": "Allow Quivanta Quiz to access your photos for your profile picture and admin images."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#6A35D0"
         }
       ]
     ],

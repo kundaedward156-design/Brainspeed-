@@ -54,9 +54,9 @@ export default function RegisterScreen() {
     <Screen scroll keyboardAvoid>
       <Header title="Create Account" showBack />
       <View style={styles.logoWrap}>
-        <Logo size="sm" lightBg />
+        <Logo size="sm" />
       </View>
-      <Text style={styles.message}>Join Brainspeed and start competing for rewards.</Text>
+      <Text style={styles.message}>Join Quivanta Quiz and start competing for rewards.</Text>
 
       <Input
         label="Full Name"
@@ -124,5 +124,5 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xxl,
   },
   footerText: { color: Colors.textSecondary, fontSize: Typography.size.md },
-  link: { color: Colors.blue, fontSize: Typography.size.md, fontWeight: '700' },
+  link: { color: Colors.primary, fontSize: Typography.size.md, fontWeight: '700' },
 });

@@ -187,7 +187,7 @@ export default function SettingsScreen() {
       <Card style={styles.card}>
         <View style={styles.row}>
           <Text style={styles.label}>Enabled</Text>
-          <Switch value={push} onValueChange={togglePush} trackColor={{ true: Colors.gold }} />
+          <Switch value={push} onValueChange={togglePush} trackColor={{ true: Colors.primary }} />
         </View>
       </Card>
 

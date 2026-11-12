@@ -1,55 +1,64 @@
 /**
- * Brainspeed Design System — Dark UI matching product screenshots
- * Deep black/navy + gold-orange energy accents
+ * Design tokens — Quivanta Quiz.
+ * Light, calm surfaces with a deep-violet brand colour taken from the app icon.
  */
 
 export const Colors = {
   // Brand
-  navy: '#0A0A0A',
-  navyDeep: '#000000',
-  navyLight: '#1A1A1A',
-  blue: '#1E6FFF',
-  blueDark: '#0D4FCC',
-  blueEnergy: '#2B7BFF',
-  gold: '#F5C518',
-  goldLight: '#FFD54F',
-  goldDark: '#D4A017',
-  orange: '#F97316',
-  orangeLight: '#FB923C',
+  primary: '#6A35D0',
+  primaryDark: '#4A1FA3',
+  primaryDeep: '#2D025B',
+  primarySoft: '#EFE9FD',
+  primaryMuted: 'rgba(106, 53, 208, 0.10)',
+  accent: '#F5A623', // money / trophies
+  accentSoft: '#FFF4DC',
 
-  // Dark app surfaces
-  background: '#0A0A0A',
-  surface: '#141414',
-  surfaceElevated: '#1C1C1C',
-  surfaceMuted: '#1F1F1F',
-  border: '#2A2A2A',
-  borderStrong: '#3A3A3A',
+  // Surfaces
+  background: '#F6F3FF',
+  surface: '#FFFFFF',
+  surfaceElevated: '#FFFFFF',
+  surfaceMuted: '#EFEBFA',
+  border: '#E4DDF5',
+  borderStrong: '#CFC4EC',
 
-  // Text on dark
-  text: '#FFFFFF',
-  textSecondary: '#A0A0A0',
-  textMuted: '#6B6B6B',
-  textInverse: '#0A0A0A',
-
-  // Aliases for compatibility
-  white: '#FFFFFF',
-  whiteMuted: 'rgba(255, 255, 255, 0.75)',
-  whiteDim: 'rgba(255, 255, 255, 0.45)',
+  // Text
+  text: '#1D1244',
+  textSecondary: '#5E5683',
+  textMuted: '#8D86AE',
+  textInverse: '#FFFFFF',
+  textOnPrimary: '#FFFFFF',
 
   // Semantic
-  success: '#22C55E',
-  successMuted: 'rgba(34, 197, 94, 0.15)',
-  error: '#EF4444',
-  errorMuted: 'rgba(239, 68, 68, 0.15)',
-  warning: '#F59E0B',
+  success: '#12A05C',
+  successMuted: 'rgba(18, 160, 92, 0.12)',
+  error: '#D93A3A',
+  errorMuted: 'rgba(217, 58, 58, 0.10)',
+  warning: '#D98A0B',
+  warningMuted: 'rgba(217, 138, 11, 0.12)',
+  info: '#2B6CE0',
 
-  // Accents
-  goldMuted: 'rgba(245, 197, 24, 0.18)',
-  blueMuted: 'rgba(30, 111, 255, 0.12)',
-  navyCard: '#141414',
-  navyElevated: '#1C1C1C',
-  whiteFaint: 'rgba(255, 255, 255, 0.08)',
-  overlay: 'rgba(0, 0, 0, 0.7)',
+  overlay: 'rgba(29, 18, 68, 0.55)',
+  white: '#FFFFFF',
+  whiteMuted: 'rgba(255, 255, 255, 0.78)',
+  whiteDim: 'rgba(255, 255, 255, 0.5)',
+  whiteFaint: 'rgba(255, 255, 255, 0.14)',
+
+  // ── Legacy aliases (admin screens written against the old dark theme) ──
+  gold: '#6A35D0',
+  goldLight: '#8B5CF0',
+  goldDark: '#4A1FA3',
+  goldMuted: 'rgba(106, 53, 208, 0.10)',
+  navy: '#2D025B',
+  navyDeep: '#1D1244',
+  navyLight: '#4A1FA3',
+  navyCard: '#FFFFFF',
+  navyElevated: '#FFFFFF',
+  blue: '#2B6CE0',
+  blueDark: '#1F52B3',
+  blueEnergy: '#2B6CE0',
+  blueMuted: 'rgba(43, 108, 224, 0.12)',
+  orange: '#F5A623',
+  orangeLight: '#F8BC57',
 } as const;
 
 export const Spacing = {
@@ -69,7 +78,7 @@ export const BorderRadius = {
   md: 12,
   lg: 16,
   xl: 20,
-  xxl: 24,
+  xxl: 28,
   full: 9999,
 } as const;
 
@@ -89,24 +98,24 @@ export const Typography = {
 
 export const Shadows = {
   card: {
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 4,
+    shadowColor: '#2D025B',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 3,
   },
   button: {
-    shadowColor: '#D4A017',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowColor: '#4A1FA3',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    elevation: 5,
   },
   soft: {
-    shadowColor: '#000000',
+    shadowColor: '#2D025B',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
-    elevation: 2,
+    elevation: 1,
   },
 } as const;

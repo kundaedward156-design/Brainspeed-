@@ -122,7 +122,7 @@ export default function AdminRewards() {
     <Screen
       scroll
       contentStyle={{}}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.gold} />}
+      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
     >
       <Header title="Rewards" showBack />
       <Card style={styles.card}>
@@ -197,7 +197,7 @@ export default function AdminRewards() {
                   if (error) Alert.alert('Error', error);
                   else load();
                 }}
-                trackColor={{ true: Colors.gold }}
+                trackColor={{ true: Colors.primary }}
               />
               <TouchableOpacity
                 onPress={() => {
@@ -207,7 +207,7 @@ export default function AdminRewards() {
                   setImageUri(r.image_url || null);
                 }}
               >
-                <Ionicons name="create-outline" size={20} color={Colors.goldDark} />
+                <Ionicons name="create-outline" size={20} color={Colors.primaryDark} />
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() =>
@@ -287,5 +287,5 @@ const styles = StyleSheet.create({
   },
   thumb: { width: 40, height: 40, borderRadius: 8, backgroundColor: Colors.surfaceMuted },
   rowTitle: { color: Colors.text, fontWeight: '600' },
-  meta: { color: Colors.goldDark, fontSize: Typography.size.xs },
+  meta: { color: Colors.primaryDark, fontSize: Typography.size.xs },
 });

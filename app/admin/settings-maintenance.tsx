@@ -33,7 +33,7 @@ export default function SettingsMaintenance() {
       <Card style={styles.card}>
         <View style={styles.row}>
           <Text style={styles.label}>Enabled</Text>
-          <Switch value={enabled} onValueChange={setEnabled} trackColor={{ true: Colors.gold }} />
+          <Switch value={enabled} onValueChange={setEnabled} trackColor={{ true: Colors.primary }} />
         </View>
         <Text style={styles.label}>Message for players</Text>
         <TextInput

@@ -1,8 +1,10 @@
 /**
- * Auth: Email+password OR Phone OTP (Africa's Talking via Edge Functions)
+ * Auth: phone OTP (Supabase Auth, SMS delivered by Africa's Talking through the
+ * Send-SMS hook) or email + password.
  */
 import type { Profile } from '@/types';
 import { supabase, isSupabaseConfigured } from '@/services/supabase';
+import { toE164Zm } from '@/utils/phone';
 
 export interface AuthCredentials {
   email: string;
@@ -15,135 +17,72 @@ export interface RegisterPayload {
   password: string;
 }
 
+const NOT_CONNECTED = 'The app cannot reach the server. Check your internet connection and try again.';
+
 async function fetchProfile(userId: string): Promise<Profile | null> {
   if (!supabase) return null;
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
-  if (error || !data) return null;
-  return data as Profile;
+  // The profile row is created by a database trigger; allow a moment for brand-new users.
+  for (let i = 0; i < 4; i++) {
+    const { data } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+    if (data) return data as Profile;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return null;
+}
+
+function niceAuthError(message: string): string {
+  if (/invalid login credentials/i.test(message)) return 'Wrong email or password.';
+  if (/otp|token/i.test(message) && /expired|invalid/i.test(message)) return 'That code is wrong or has expired. Request a new one.';
+  if (/rate limit|too many|security purposes/i.test(message)) return 'Too many attempts. Please wait a minute and try again.';
+  if (/sms|provider|hook/i.test(message)) return 'We could not send the SMS right now. Please try again shortly.';
+  return message;
 }
 
 export const authService = {
-  async login({
-    email,
-    password,
-  }: AuthCredentials): Promise<{ user: Profile | null; error: string | null }> {
-    if (!isSupabaseConfigured || !supabase) {
-      return { user: null, error: 'App is not connected to the server yet.' };
-    }
+  async login({ email, password }: AuthCredentials): Promise<{ user: Profile | null; error: string | null }> {
+    if (!isSupabaseConfigured || !supabase) return { user: null, error: NOT_CONNECTED };
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { user: null, error: error.message };
+    if (error) return { user: null, error: niceAuthError(error.message) };
     if (!data.user) return { user: null, error: 'Unable to sign in.' };
     const profile = await fetchProfile(data.user.id);
-    if (!profile) {
-      return {
-        user: null,
-        error: 'Profile not found. Contact support if this continues.',
-      };
-    }
-    return { user: profile, error: null };
+    return profile ? { user: profile, error: null } : { user: null, error: 'Profile not found. Contact support.' };
   },
 
-  async register({
-    full_name,
-    email,
-    password,
-  }: RegisterPayload): Promise<{ user: Profile | null; error: string | null }> {
-    if (!isSupabaseConfigured || !supabase) {
-      return { user: null, error: 'App is not connected to the server yet.' };
-    }
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { data: { full_name } },
-    });
-    if (error) return { user: null, error: error.message };
+  async register({ full_name, email, password }: RegisterPayload): Promise<{ user: Profile | null; error: string | null }> {
+    if (!isSupabaseConfigured || !supabase) return { user: null, error: NOT_CONNECTED };
+    const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { full_name } } });
+    if (error) return { user: null, error: niceAuthError(error.message) };
     if (!data.user) return { user: null, error: 'Unable to create account.' };
-
+    if (!data.session) {
+      return { user: null, error: 'Account created. Check your email to confirm it, then log in.' };
+    }
     const profile = await fetchProfile(data.user.id);
-    return {
-      user: profile,
-      error: profile
-        ? null
-        : 'Account created. Please verify your email if required, then log in.',
-    };
+    return { user: profile, error: profile ? null : 'Account created. Please log in.' };
   },
 
-  /** Request SMS OTP via Africa's Talking (Edge Function send-otp) */
-  async requestPhoneOtp(phone: string): Promise<{ success: boolean; error: string | null; debug_otp?: string }> {
-    if (!isSupabaseConfigured || !supabase) {
-      return { success: false, error: 'App is not connected to the server yet.' };
-    }
-    const { data, error } = await supabase.functions.invoke('send-otp', {
-      body: { phone },
+  /** Step 1 — Supabase generates the code and hands it to our send-sms hook. */
+  async requestPhoneOtp(phone: string, fullName?: string): Promise<{ error: string | null; phone?: string }> {
+    if (!isSupabaseConfigured || !supabase) return { error: NOT_CONNECTED };
+    const e164 = toE164Zm(phone);
+    if (!e164) return { error: 'Enter a valid MTN, Airtel or Zamtel number, e.g. 097 123 4567.' };
+    const { error } = await supabase.auth.signInWithOtp({
+      phone: e164,
+      options: { shouldCreateUser: true, data: fullName ? { full_name: fullName } : undefined },
     });
-    if (error) return { success: false, error: error.message };
-    const res = data as { success?: boolean; error?: string; debug_otp?: string };
-    if (!res?.success) return { success: false, error: res?.error || 'Failed to send OTP' };
-    return { success: true, error: null, debug_otp: res.debug_otp };
+    if (error) return { error: niceAuthError(error.message) };
+    return { error: null, phone: e164 };
   },
 
-  /** Verify OTP → create-session → sign in */
-  async verifyPhoneOtp(
-    phone: string,
-    code: string,
-    full_name?: string
-  ): Promise<{ user: Profile | null; error: string | null }> {
-    if (!isSupabaseConfigured || !supabase) {
-      return { user: null, error: 'App is not connected to the server yet.' };
-    }
-    const { data, error } = await supabase.functions.invoke('verify-otp', {
-      body: { phone, code, full_name },
-    });
-    if (error) return { user: null, error: error.message };
-    const res = data as {
-      success?: boolean;
-      error?: string;
-      user_id?: string;
-      exchange_token?: string;
-    };
-    if (!res?.success || !res.exchange_token) {
-      return { user: null, error: res?.error || 'Verification failed' };
-    }
-
-    const { data: sess, error: sessErr } = await supabase.functions.invoke('create-session', {
-      body: { exchange_token: res.exchange_token, phone },
-    });
-    if (sessErr) return { user: null, error: sessErr.message };
-    const s = sess as {
-      success?: boolean;
-      error?: string;
-      email?: string;
-      temp_password?: string;
-      hashed_token?: string;
-      user_id?: string;
-    };
-    if (!s?.success) return { user: null, error: s?.error || 'Session failed' };
-
-    if (s.temp_password && s.email) {
-      const { data: signed, error: signErr } = await supabase.auth.signInWithPassword({
-        email: s.email,
-        password: s.temp_password,
-      });
-      if (signErr) return { user: null, error: signErr.message };
-      const profile = await fetchProfile(signed.user?.id || s.user_id || '');
-      return { user: profile, error: profile ? null : 'Profile missing' };
-    }
-
-    if (s.hashed_token) {
-      const { data: verified, error: vErr } = await supabase.auth.verifyOtp({
-        token_hash: s.hashed_token,
-        type: 'magiclink',
-      });
-      if (vErr) return { user: null, error: vErr.message };
-      const profile = await fetchProfile(verified.user?.id || s.user_id || '');
-      return { user: profile, error: profile ? null : 'Profile missing' };
-    }
-
-    return { user: null, error: 'Could not establish session' };
+  /** Step 2 — verify the SMS code; Supabase returns a real session. */
+  async verifyPhoneOtp(phone: string, code: string): Promise<{ user: Profile | null; error: string | null }> {
+    if (!isSupabaseConfigured || !supabase) return { user: null, error: NOT_CONNECTED };
+    const e164 = toE164Zm(phone);
+    if (!e164) return { user: null, error: 'Invalid phone number.' };
+    const { data, error } = await supabase.auth.verifyOtp({ phone: e164, token: code.trim(), type: 'sms' });
+    if (error) return { user: null, error: niceAuthError(error.message) };
+    if (!data.user) return { user: null, error: 'Could not sign you in.' };
+    const profile = await fetchProfile(data.user.id);
+    return profile ? { user: profile, error: null } : { user: null, error: 'Profile not found. Contact support.' };
   },
 
   async logout(): Promise<{ error: string | null }> {
@@ -152,18 +91,12 @@ export const authService = {
     return { error: error?.message ?? null };
   },
 
-  async getSession(): Promise<{ session: unknown | null; error: string | null }> {
-    if (!supabase) return { session: null, error: null };
-    const { data, error } = await supabase.auth.getSession();
-    return { session: data.session, error: error?.message ?? null };
-  },
-
   async getCurrentProfile(): Promise<{ profile: Profile | null; error: string | null }> {
     if (!supabase) return { profile: null, error: null };
-    const { data: sessionData } = await supabase.auth.getSession();
-    const uid = sessionData.session?.user?.id;
+    const { data } = await supabase.auth.getSession();
+    const uid = data.session?.user?.id;
     if (!uid) return { profile: null, error: null };
-    const profile = await fetchProfile(uid);
-    return { profile, error: null };
+    const { data: row, error } = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle();
+    return { profile: (row as Profile) ?? null, error: error?.message ?? null };
   },
 };

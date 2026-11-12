@@ -1,28 +1,33 @@
 import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 import { supabase } from '@/services/supabase';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: true,
-    shouldSetBadge: true,
+    shouldSetBadge: false,
   }),
 });
 
-export async function registerForPushNotifications(userId: string) {
+export async function registerForPushNotifications(userId: string): Promise<string | null> {
   try {
-    const { status: existing } = await Notifications.getPermissionsAsync();
-    let finalStatus = existing;
-    if (existing !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'Quivanta',
+        importance: Notifications.AndroidImportance.HIGH,
+      });
     }
-    if (finalStatus !== 'granted') return null;
+    const { status: existing } = await Notifications.getPermissionsAsync();
+    let status = existing;
+    if (existing !== 'granted') status = (await Notifications.requestPermissionsAsync()).status;
+    if (status !== 'granted') return null;
 
-    const token = (await Notifications.getExpoPushTokenAsync()).data;
+    const projectId = (Constants.expoConfig?.extra as any)?.eas?.projectId;
+    const token = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
     if (token && supabase) {
-      // Store if column exists (add push_token to profiles if needed)
-      await supabase.from('profiles').update({ push_token: token }).eq('id', userId).catch(() => {});
+      await supabase.from('profiles').update({ push_token: token }).eq('id', userId);
     }
     return token;
   } catch {

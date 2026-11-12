@@ -1,70 +1,48 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, RefreshControl } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { View, Text, StyleSheet } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { Screen } from '@/components/ui/Screen';
 import { Header } from '@/components/ui/Header';
-import { Button } from '@/components/ui/Button';
-import { LoadingState } from '@/components/ui/LoadingState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Colors, Spacing, Typography, BorderRadius } from '@/constants/theme';
-import { competitionsService } from '@/services/competitions';
-import type { Competition } from '@/types';
+import { formatMoney } from '@/constants/config';
+import { adminService, type AdminMatch } from '@/services/admin';
+import { timeAgo } from '@/utils/format';
 
-export default function AdminCompetitions() {
-  const router = useRouter();
-  const [list, setList] = useState<Competition[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    const res = await competitionsService.listAll();
-    setList(res.data);
-    setLoading(false);
-  }, []);
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
-
+export default function AdminMatches() {
+  const [rows, setRows] = useState<AdminMatch[]>([]);
+  useFocusEffect(useCallback(() => { adminService.listMatches().then((r) => setRows(r.data)); }, []));
   return (
-    <Screen
-      scroll
-      contentStyle={{}}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.gold} />}
-    >
-      <Header title="Quizzes" />
-      <Button title="Create Quiz" onPress={() => router.push('/admin/quizzes')} fullWidth style={{ marginBottom: Spacing.lg }} />
-      {loading ? (
-        <LoadingState />
-      ) : list.length === 0 ? (
-        <EmptyState icon="flash-outline" title="No quizzes" message="Create your first quiz." />
+    <Screen scroll>
+      <Header title="Matches" />
+      {rows.length === 0 ? (
+        <EmptyState icon="flash-outline" title="No matches yet" message="Matches appear here as players compete." />
       ) : (
-        list.map((c) => (
-          <TouchableOpacity
-            key={c.id}
-            style={styles.row}
-            onPress={() => router.push('/admin/questions')}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={styles.title}>{c.title}</Text>
-              <Text style={styles.meta}>Reward: {c.reward ?? '—'} · {c.category?.name || 'No category'}</Text>
+        <View style={styles.list}>
+          {rows.map((m, i) => (
+            <View key={m.id} style={[styles.row, i < rows.length - 1 && styles.divider]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.names}>{m.player1 || '—'}  vs  {m.player2 || '—'}</Text>
+                <Text style={styles.sub}>
+                  {m.status === 'completed'
+                    ? `${m.player1_score} – ${m.player2_score} · ${m.is_draw ? 'Draw' : `Winner: ${m.winner}`}`
+                    : m.status.replace('_', ' ')} · {timeAgo(m.created_at)}
+                </Text>
+              </View>
+              {m.status === 'completed' && !m.is_draw ? <Text style={styles.prize}>{formatMoney(m.prize_zmw)}</Text> : null}
             </View>
-            <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
-          </TouchableOpacity>
-        ))
+          ))}
+        </View>
       )}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    marginBottom: Spacing.sm,
-  },
-  title: { color: Colors.text, fontWeight: '700' },
-  meta: { color: Colors.textSecondary, fontSize: Typography.size.xs, marginTop: 2 },
+  list: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, paddingHorizontal: Spacing.lg, borderWidth: 1, borderColor: Colors.border },
+  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.md },
+  divider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border },
+  names: { color: Colors.text, fontWeight: '700' },
+  sub: { color: Colors.textMuted, fontSize: Typography.size.xs, marginTop: 3, textTransform: 'capitalize' },
+  prize: { color: Colors.success, fontWeight: '800' },
 });

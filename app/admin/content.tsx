@@ -15,16 +15,16 @@ const ITEMS = [
     href: '/admin/categories',
   },
   {
-    title: 'Quizzes',
-    desc: 'Create quizzes, set reward & dates',
-    icon: 'list-outline' as const,
-    href: '/admin/quizzes',
-  },
-  {
     title: 'Questions',
-    desc: 'Add options & mark correct answer',
+    desc: 'Write questions & mark the correct answer',
     icon: 'help-circle-outline' as const,
     href: '/admin/questions',
+  },
+  {
+    title: 'Rewards',
+    desc: 'Featured prizes shown to players',
+    icon: 'gift-outline' as const,
+    href: '/admin/rewards-manage',
   },
   {
     title: 'Banners',
@@ -44,7 +44,7 @@ export default function AdminContent() {
         <TouchableOpacity key={item.title} onPress={() => router.push(item.href as any)} activeOpacity={0.85}>
           <Card style={styles.card}>
             <View style={styles.row}>
-              <Ionicons name={item.icon} size={28} color={Colors.gold} />
+              <Ionicons name={item.icon} size={28} color={Colors.primary} />
               <View style={styles.text}>
                 <Text style={styles.title}>{item.title}</Text>
                 <Text style={styles.desc}>{item.desc}</Text>

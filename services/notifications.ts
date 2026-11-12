@@ -9,8 +9,18 @@ export const notificationsService = {
       .select('*')
       .or(userId ? `user_id.eq.${userId},user_id.is.null` : 'user_id.is.null')
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(60);
     return { data: (data as AppNotification[]) ?? [], error: error?.message ?? null };
+  },
+
+  async unreadCount(userId: string): Promise<number> {
+    if (!supabase || !userId) return 0;
+    const { count } = await supabase
+      .from('notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('is_read', false);
+    return count ?? 0;
   },
 
   async markRead(id: string): Promise<{ error: string | null }> {
@@ -21,10 +31,7 @@ export const notificationsService = {
 
   async markAllRead(userId: string): Promise<{ error: string | null }> {
     if (!supabase || !userId) return { error: null };
-    const { error } = await supabase
-      .from('notifications')
-      .update({ is_read: true })
-      .eq('user_id', userId);
+    const { error } = await supabase.from('notifications').update({ is_read: true }).eq('user_id', userId);
     return { error: error?.message ?? null };
   },
 };

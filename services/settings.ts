@@ -1,4 +1,5 @@
-import type { AppSetting, CompetitionRulesSetting, MaintenanceSetting, ScoringSetting } from '@/types';
+import type { AppSetting, AppLinks, CompetitionRulesSetting, MaintenanceSetting, ScoringSetting } from '@/types';
+import { AppConfig } from '@/constants/config';
 import { supabase } from '@/services/supabase';
 
 async function getKey(key: string): Promise<{ value: Record<string, unknown> | null; error: string | null }> {
@@ -17,16 +18,9 @@ async function setKey(
   value: Record<string, unknown>
 ): Promise<{ error: string | null }> {
   if (!supabase) return { error: 'Not connected' };
-  const { data: existing } = await supabase
+  const { error } = await supabase
     .from('app_settings')
-    .select('key')
-    .eq('key', key)
-    .maybeSingle();
-  if (existing) {
-    const { error } = await supabase.from('app_settings').update({ value }).eq('key', key);
-    return { error: error?.message ?? null };
-  }
-  const { error } = await supabase.from('app_settings').insert({ key, value });
+    .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
   return { error: error?.message ?? null };
 }
 
@@ -49,7 +43,18 @@ export const settingsService = {
   },
 
   async setScoring(points_per_correct: number): Promise<{ error: string | null }> {
-    return setKey('scoring', { points_per_correct });
+    // merge so question_seconds / question_count are not wiped
+    const { value } = await getKey('scoring');
+    return setKey('scoring', { ...(value ?? {}), points_per_correct });
+  },
+
+  async getLinks(): Promise<{ data: AppLinks; error: string | null }> {
+    const { value, error } = await getKey('links');
+    return { data: { ...AppConfig.defaultLinks, ...((value as Partial<AppLinks>) ?? {}) }, error };
+  },
+
+  async setLinks(links: AppLinks): Promise<{ error: string | null }> {
+    return setKey('links', links as unknown as Record<string, unknown>);
   },
 
   async getMaintenance(): Promise<{ data: MaintenanceSetting; error: string | null }> {

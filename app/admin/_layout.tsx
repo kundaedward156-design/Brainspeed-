@@ -1,21 +1,26 @@
 import React from 'react';
-import { Tabs } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
+import { adminService } from '@/services/admin';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 
 export default function AdminLayout() {
+  const router = useRouter();
+  React.useEffect(() => {
+    adminService.isAdmin().then((ok) => { if (!ok) router.replace('/(tabs)'); });
+  }, [router]);
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: '#0D1B2A',
-          borderTopColor: 'rgba(255,255,255,0.06)',
+          backgroundColor: Colors.surface,
+          borderTopColor: Colors.border,
           height: 58,
           paddingBottom: 6,
         },
-        tabBarActiveTintColor: Colors.gold,
-        tabBarInactiveTintColor: Colors.whiteDim,
+        tabBarActiveTintColor: Colors.primary,
+        tabBarInactiveTintColor: Colors.textMuted,
         tabBarLabelStyle: { fontSize: 10, fontWeight: '600' },
       }}
     >
@@ -56,11 +61,12 @@ export default function AdminLayout() {
       />
       {/* Hidden sub-screens */}
       <Tabs.Screen name="categories" options={{ href: null }} />
-      <Tabs.Screen name="quizzes" options={{ href: null }} />
       <Tabs.Screen name="questions" options={{ href: null }} />
       <Tabs.Screen name="banners-manage" options={{ href: null }} />
       <Tabs.Screen name="rewards-manage" options={{ href: null }} />
-      <Tabs.Screen name="entries" options={{ href: null }} />
+      <Tabs.Screen name="transactions" options={{ href: null }} />
+      <Tabs.Screen name="links" options={{ href: null }} />
+      <Tabs.Screen name="announcements" options={{ href: null }} />
       <Tabs.Screen name="settings-rules" options={{ href: null }} />
       <Tabs.Screen name="settings-scoring" options={{ href: null }} />
       <Tabs.Screen name="settings-maintenance" options={{ href: null }} />

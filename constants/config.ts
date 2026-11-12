@@ -1,6 +1,9 @@
 /**
- * App configuration
- * EAS / local env: see .env.example for exact names
+ * App configuration.
+ *
+ * ONLY public values live here (Supabase URL + anon key are public by design and are
+ * protected by Row Level Security). Every real secret — Lipila, Africa's Talking, the
+ * service-role key — lives in Supabase Edge Function secrets, never in the app.
  */
 import Constants from 'expo-constants';
 
@@ -11,23 +14,31 @@ function fromEnv(key: string, extraKey: string) {
 }
 
 export const AppConfig = {
-  name: 'Brainspeed',
-  slogan: 'Think fast. Compete smart.\nGet rewarded.',
+  name: 'Quivanta Quiz',
+  shortName: 'Quivanta',
+  slogan: 'Compete Smart. Get rewarded.',
+  bannerRotateMs: 5000,
   currency: 'ZMW',
   currencySymbol: 'K',
-  defaultEntryFee: 22,
-  platformFeePercent: 9.09,
-  bannerRotateMs: 5000,
   supabase: {
     url: fromEnv('EXPO_PUBLIC_SUPABASE_URL', 'supabaseUrl'),
     anonKey: fromEnv('EXPO_PUBLIC_SUPABASE_ANON_KEY', 'supabaseAnonKey'),
   },
-  lipila: {
-    merchantId: fromEnv('EXPO_PUBLIC_LIPILA_MERCHANT_ID', 'lipilaMerchantId'),
-    apiBase: fromEnv('EXPO_PUBLIC_LIPILA_API_BASE', 'lipilaApiBase'),
+  /** Shown if the admin has not filled the Links screen yet. */
+  defaultLinks: {
+    telegram_url: '',
+    privacy_url: '',
+    terms_url: '',
+    support_email: '',
+    whatsapp_url: '',
   },
 } as const;
 
 export function isSupabaseConfigured(): boolean {
   return Boolean(AppConfig.supabase.url && AppConfig.supabase.anonKey);
+}
+
+export function formatMoney(value: number | string | null | undefined): string {
+  const n = Number(value ?? 0);
+  return `${AppConfig.currencySymbol}${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
