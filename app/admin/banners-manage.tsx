@@ -20,7 +20,8 @@ import { Card } from '@/components/ui/Card';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { Colors, Spacing, Typography, BorderRadius } from '@/constants/theme';
 import { bannersService } from '@/services/banners';
-import type { Banner } from '@/types';
+import { categoriesService } from '@/services/categories';
+import type { Banner, Subject } from '@/types';
 
 export default function AdminBanners() {
   const [list, setList] = useState<Banner[]>([]);
@@ -28,6 +29,9 @@ export default function AdminBanners() {
   const [saving, setSaving] = useState(false);
   const [title, setTitle] = useState('');
   const [link, setLink] = useState('');
+  const [subtitle, setSubtitle] = useState('');
+  const [buttonText, setButtonText] = useState('');
+  const [subjects, setSubjects] = useState<Subject[]>([]);
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
 
@@ -36,6 +40,7 @@ export default function AdminBanners() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    categoriesService.listWithStats(true).then((c) => setSubjects(c.data));
     const res = await bannersService.listAll();
     if (res.error) {
       // soft-fail list
@@ -70,6 +75,8 @@ export default function AdminBanners() {
   const reset = () => {
     setTitle('');
     setLink('');
+    setSubtitle('');
+    setButtonText('');
     setImageUri(null);
     setEditId(null);
   };
@@ -89,6 +96,8 @@ export default function AdminBanners() {
       if (editId) {
         const { error } = await bannersService.update(editId, {
           title: title.trim(),
+          description: subtitle.trim() || null,
+          button_text: buttonText.trim() || null,
           link_url: link.trim() || null,
           // only re-upload if local file (not already https from existing banner)
           imageUri: imageUri && !imageUri.startsWith('http') ? imageUri : imageUri?.startsWith('http') ? imageUri : null,
@@ -101,6 +110,8 @@ export default function AdminBanners() {
       } else {
         const { error } = await bannersService.create({
           title: title.trim(),
+          description: subtitle.trim() || null,
+          button_text: buttonText.trim() || null,
           link_url: link.trim() || null,
           imageUri: imageUri!,
           sort_order: list.length,
@@ -170,11 +181,36 @@ export default function AdminBanners() {
         />
         <TextInput
           style={styles.input}
-          placeholder="Link URL (optional)"
+          placeholder="Short line under the title (optional)"
           placeholderTextColor={Colors.textMuted}
-          value={link}
-          onChangeText={setLink}
+          value={subtitle}
+          onChangeText={setSubtitle}
         />
+        <TextInput
+          style={styles.input}
+          placeholder="Button text, e.g. Play now (optional)"
+          placeholderTextColor={Colors.textMuted}
+          value={buttonText}
+          onChangeText={setButtonText}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Opens… a web link, or pick a subject below"
+          placeholderTextColor={Colors.textMuted}
+          value={link.startsWith('category:') ? `Subject: ${subjects.find((x) => `category:${x.id}` === link)?.name ?? 'selected'}` : link}
+          onChangeText={setLink}
+          editable={!link.startsWith('category:')}
+        />
+        <View style={styles.chipRow}>
+          {link.startsWith('category:') ? (
+            <TouchableOpacity style={styles.chip} onPress={() => setLink('')}><Text style={styles.chipText}>Clear</Text></TouchableOpacity>
+          ) : null}
+          {subjects.map((x) => (
+            <TouchableOpacity key={x.id} style={[styles.chip, link === `category:${x.id}` && styles.chipOn]} onPress={() => setLink(`category:${x.id}`)}>
+              <Text style={[styles.chipText, link === `category:${x.id}` && { color: Colors.white }]}>{x.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
 
         {imageUri ? (
           <Image source={{ uri: imageUri }} style={styles.preview} resizeMode="cover" />
@@ -237,7 +273,9 @@ export default function AdminBanners() {
                 onPress={() => {
                   setEditId(b.id);
                   setTitle(b.title);
-                  setLink(b.link_url || '');
+                  setLink(b.destination || b.link_url || '');
+                  setSubtitle(b.description || '');
+                  setButtonText(b.button_text || '');
                   setImageUri(b.image_url || null);
                 }}
               >
@@ -255,6 +293,10 @@ export default function AdminBanners() {
 }
 
 const styles = StyleSheet.create({
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: Spacing.md },
+  chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: BorderRadius.full, backgroundColor: Colors.surfaceMuted, borderWidth: 1, borderColor: Colors.border },
+  chipOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipText: { color: Colors.textSecondary, fontWeight: '700', fontSize: Typography.size.xs },
   card: { marginBottom: Spacing.lg },
   label: { color: Colors.text, fontWeight: '700', marginBottom: Spacing.md },
   input: {

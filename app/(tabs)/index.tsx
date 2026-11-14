@@ -1,13 +1,16 @@
 /**
  * Home dashboard — wallet, quick play, top players, community and legal links.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, RefreshControl, ScrollView, Dimensions } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, RefreshControl, ScrollView } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Screen } from '@/components/ui/Screen';
 import { Avatar } from '@/components/ui/Avatar';
+import { BannerCarousel } from '@/components/home/BannerCarousel';
+import { SubjectGrid } from '@/components/home/SubjectGrid';
+import { SubjectTile } from '@/components/home/SubjectTile';
 import { Colors, Spacing, Typography, BorderRadius, Shadows } from '@/constants/theme';
 import { formatMoney } from '@/constants/config';
 import { bannersService } from '@/services/banners';
@@ -16,21 +19,19 @@ import { notificationsService } from '@/services/notifications';
 import { settingsService } from '@/services/settings';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLinks, openLink, openSupport } from '@/hooks/useLinks';
-import type { Banner, LeaderboardEntry } from '@/types';
-
-const BANNER_W = Dimensions.get('window').width - Spacing.xl * 2;
+import { useSubjects } from '@/hooks/useSubjects';
+import type { Banner, LeaderboardEntry, Subject } from '@/types';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { profile, refresh } = useAuth();
   const links = useLinks();
+  const { subjects, reload } = useSubjects();
   const [banners, setBanners] = useState<Banner[]>([]);
   const [top, setTop] = useState<LeaderboardEntry[]>([]);
   const [unread, setUnread] = useState(0);
   const [fees, setFees] = useState({ entry: 23, prize: 40 });
   const [refreshing, setRefreshing] = useState(false);
-  const [bannerIndex, setBannerIndex] = useState(0);
-  const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     const [b, lb, f] = await Promise.all([
@@ -49,22 +50,25 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await load();
+    await Promise.all([load(), reload()]);
     setRefreshing(false);
   };
 
-  useEffect(() => {
-    if (banners.length <= 1) return;
-    const t = setInterval(() => {
-      setBannerIndex((prev) => {
-        const next = (prev + 1) % banners.length;
-        scrollRef.current?.scrollTo({ x: next * (BANNER_W + Spacing.md), animated: true });
-        return next;
-      });
-    }, 4500);
-    return () => clearInterval(t);
-  }, [banners.length]);
+  const openSubject = (s: Subject) => router.push({ pathname: '/category/[id]', params: { id: s.id } });
 
+  const onBanner = (b: Banner) => {
+    const dest = (b.destination || b.link_url || '').trim();
+    if (!dest) return;
+    if (dest.startsWith('category:')) return router.push({ pathname: '/category/[id]', params: { id: dest.slice(9) } });
+    if (dest.startsWith('/')) return router.push(dest as any);
+    openLink(dest, b.title);
+  };
+
+  const recent = subjects
+    .filter((s) => s.my_last_played)
+    .sort((a, b) => new Date(b.my_last_played!).getTime() - new Date(a.my_last_played!).getTime())
+    .slice(0, 8);
+  const hot = [...subjects].sort((a, b) => b.played - a.played || b.waiting - a.waiting).slice(0, 6);
   const first = (profile?.full_name || '').split(' ')[0];
 
   return (
@@ -79,7 +83,7 @@ export default function HomeScreen() {
           <Avatar name={profile?.full_name} uri={profile?.avatar_url} size={46} />
           <View>
             <Text style={styles.hello}>Hello{first ? `, ${first}` : ''}</Text>
-            <Text style={styles.sub}>Ready to compete?</Text>
+            <Text style={styles.sub}>Pick a subject and compete</Text>
           </View>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => router.push('/notifications')} style={styles.bell} activeOpacity={0.8}>
@@ -90,67 +94,70 @@ export default function HomeScreen() {
 
       {/* wallet */}
       <LinearGradient colors={[Colors.primaryDark, Colors.primaryDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.wallet}>
-        <Text style={styles.walletLabel}>Wallet balance</Text>
-        <Text style={styles.walletValue}>{formatMoney(profile?.balance_zmw)}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.walletLabel}>Wallet balance</Text>
+          <Text style={styles.walletValue}>{formatMoney(profile?.balance_zmw)}</Text>
+        </View>
         <View style={styles.walletActions}>
           <TouchableOpacity style={[styles.walletBtn, styles.walletBtnSolid]} onPress={() => router.push('/deposit')} activeOpacity={0.85}>
-            <Ionicons name="add-circle" size={18} color={Colors.primaryDeep} />
+            <Ionicons name="add" size={18} color={Colors.primaryDeep} />
             <Text style={styles.walletBtnSolidText}>Deposit</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.walletBtn, styles.walletBtnGhost]} onPress={() => router.push('/withdraw')} activeOpacity={0.85}>
-            <Ionicons name="arrow-up-circle-outline" size={18} color={Colors.white} />
+            <Ionicons name="arrow-up" size={16} color={Colors.white} />
             <Text style={styles.walletBtnGhostText}>Withdraw</Text>
           </TouchableOpacity>
         </View>
       </LinearGradient>
 
-      {/* quick play */}
-      <TouchableOpacity style={styles.play} activeOpacity={0.9} onPress={() => router.push('/match')}>
-        <View style={styles.playIcon}>
-          <Ionicons name="flash" size={26} color={Colors.white} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.playTitle}>Find a match</Text>
-          <Text style={styles.playSub}>
-            Entry {formatMoney(fees.entry)} · Winner takes {formatMoney(fees.prize)}
-          </Text>
-        </View>
-        <Ionicons name="chevron-forward" size={22} color={Colors.primary} />
-      </TouchableOpacity>
+      {/* large banners */}
+      <BannerCarousel banners={banners} onPress={onBanner} />
 
-      {/* banners */}
-      {banners.length > 0 ? (
+      {/* continue playing */}
+      {recent.length > 0 ? (
         <>
-          <ScrollView
-            ref={scrollRef}
-            horizontal
-            pagingEnabled={false}
-            snapToInterval={BANNER_W + Spacing.md}
-            decelerationRate="fast"
-            showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={(e) => setBannerIndex(Math.round(e.nativeEvent.contentOffset.x / (BANNER_W + Spacing.md)))}
-            style={styles.bannerScroll}
-          >
-            {banners.map((b) => (
-              <View key={b.id} style={styles.bannerCard}>
-                {b.image_url ? (
-                  <Image source={{ uri: b.image_url }} style={styles.bannerImage} resizeMode="cover" />
-                ) : (
-                  <LinearGradient colors={[Colors.primary, Colors.primaryDeep]} style={styles.bannerImage} />
-                )}
-                <View style={styles.bannerOverlay}>
-                  <Text style={styles.bannerTitle} numberOfLines={2}>{b.title}</Text>
-                </View>
-              </View>
+          <View style={styles.sectionRow}>
+            <Text style={styles.section}>Continue playing</Text>
+            <TouchableOpacity onPress={() => router.push('/(tabs)/compete')}><Text style={styles.sectionLink}>View all</Text></TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentRow}>
+            {recent.map((s) => (
+              <SubjectTile key={s.id} subject={s} size={84} showPlayers={false} onPress={() => openSubject(s)} />
             ))}
           </ScrollView>
-          {banners.length > 1 ? (
-            <View style={styles.dots}>
-              {banners.map((_, i) => <View key={i} style={[styles.dot, i === bannerIndex && styles.dotActive]} />)}
-            </View>
-          ) : null}
         </>
       ) : null}
+
+      {/* hot subjects */}
+      {subjects.length > 6 ? (
+        <>
+          <View style={styles.sectionRow}>
+            <Text style={styles.section}>Hot subjects</Text>
+            <TouchableOpacity onPress={onRefresh} style={styles.refresh}>
+              <Text style={styles.sectionLink}>Refresh</Text>
+              <Ionicons name="refresh" size={14} color={Colors.primary} />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.caption}>Entry {formatMoney(fees.entry)} · Winner takes {formatMoney(fees.prize)} · 10 questions</Text>
+          <SubjectGrid items={hot} onPress={openSubject} />
+        </>
+      ) : null}
+
+      {/* all subjects */}
+      <View style={styles.sectionRow}>
+        <Text style={styles.section}>{subjects.length > 6 ? 'All subjects' : 'Subjects'}</Text>
+        <TouchableOpacity onPress={() => router.push('/match')}>
+          <Text style={styles.sectionLink}>Quick match</Text>
+        </TouchableOpacity>
+      </View>
+      {subjects.length > 6 ? null : (
+        <Text style={styles.caption}>Entry {formatMoney(fees.entry)} · Winner takes {formatMoney(fees.prize)} · 10 questions</Text>
+      )}
+      {subjects.length === 0 ? (
+        <View style={styles.card}><Text style={styles.empty}>Subjects will appear here as soon as they are added.</Text></View>
+      ) : (
+        <SubjectGrid items={subjects} onPress={openSubject} />
+      )}
 
       {/* top players */}
       <View style={styles.sectionRow}>
@@ -181,7 +188,7 @@ export default function HomeScreen() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.tgTitle}>Join our Telegram community</Text>
-          <Text style={styles.tgSub}>Chat with players, ask questions and get announcements.</Text>
+          <Text style={styles.tgSub}>Find opponents, ask questions and get announcements.</Text>
         </View>
         <Ionicons name="open-outline" size={18} color={Colors.primary} />
       </TouchableOpacity>
@@ -207,29 +214,19 @@ const styles = StyleSheet.create({
   bell: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.border },
   bellDot: { position: 'absolute', top: 11, right: 12, width: 9, height: 9, borderRadius: 5, backgroundColor: Colors.error, borderWidth: 1.5, borderColor: Colors.surface },
 
-  wallet: { borderRadius: BorderRadius.xl, padding: Spacing.xl, marginBottom: Spacing.lg, ...Shadows.button },
-  walletLabel: { color: Colors.whiteMuted, fontSize: Typography.size.sm, fontWeight: '600', letterSpacing: 0.4 },
-  walletValue: { color: Colors.white, fontSize: 38, fontWeight: '800', marginTop: 4, marginBottom: Spacing.lg },
-  walletActions: { flexDirection: 'row', gap: Spacing.md },
-  walletBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 13, borderRadius: BorderRadius.md },
+  wallet: { borderRadius: BorderRadius.xl, padding: Spacing.lg, marginBottom: Spacing.lg, flexDirection: 'row', alignItems: 'center', gap: Spacing.md, ...Shadows.button },
+  walletLabel: { color: Colors.whiteMuted, fontSize: Typography.size.xs, fontWeight: '600', letterSpacing: 0.4 },
+  walletValue: { color: Colors.white, fontSize: 28, fontWeight: '800', marginTop: 2 },
+  walletActions: { gap: 8 },
+  walletBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: BorderRadius.full, minWidth: 104 },
   walletBtnSolid: { backgroundColor: Colors.white },
-  walletBtnSolidText: { color: Colors.primaryDeep, fontWeight: '800' },
+  walletBtnSolidText: { color: Colors.primaryDeep, fontWeight: '800', fontSize: Typography.size.sm },
   walletBtnGhost: { backgroundColor: Colors.whiteFaint, borderWidth: 1, borderColor: 'rgba(255,255,255,0.28)' },
-  walletBtnGhostText: { color: Colors.white, fontWeight: '700' },
+  walletBtnGhostText: { color: Colors.white, fontWeight: '700', fontSize: Typography.size.sm },
 
-  play: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.lg, ...Shadows.card },
-  playIcon: { width: 52, height: 52, borderRadius: 16, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' },
-  playTitle: { color: Colors.text, fontSize: Typography.size.lg, fontWeight: '800' },
-  playSub: { color: Colors.textSecondary, fontSize: Typography.size.sm, marginTop: 2 },
-
-  bannerScroll: { marginBottom: Spacing.sm },
-  bannerCard: { width: BANNER_W, height: 140, borderRadius: BorderRadius.lg, overflow: 'hidden', marginRight: Spacing.md, backgroundColor: Colors.primaryDeep },
-  bannerImage: { width: '100%', height: '100%' },
-  bannerOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: Spacing.md, backgroundColor: 'rgba(29,18,68,0.55)' },
-  bannerTitle: { color: Colors.white, fontWeight: '700', fontSize: Typography.size.md },
-  dots: { flexDirection: 'row', justifyContent: 'center', gap: 6, marginBottom: Spacing.lg },
-  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.borderStrong },
-  dotActive: { backgroundColor: Colors.primary, width: 18 },
+  recentRow: { gap: Spacing.md, paddingBottom: Spacing.sm, marginBottom: Spacing.md },
+  refresh: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  caption: { color: Colors.textSecondary, fontSize: Typography.size.sm, marginTop: -6, marginBottom: Spacing.md },
 
   sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.sm, marginBottom: Spacing.md },
   section: { color: Colors.text, fontSize: Typography.size.lg, fontWeight: '800' },

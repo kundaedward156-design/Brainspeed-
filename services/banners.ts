@@ -25,6 +25,8 @@ export const bannersService = {
 
   async create(payload: {
     title: string;
+    description?: string | null;
+    button_text?: string | null;
     imageUri: string;
     link_url?: string | null;
     sort_order?: number;
@@ -53,6 +55,8 @@ export const bannersService = {
       is_active: payload.active ?? true,
     };
     if (payload.link_url) row.destination = payload.link_url;
+    if (payload.description) row.description = payload.description;
+    if (payload.button_text) row.button_text = payload.button_text;
 
     let { data, error } = await supabase.from('banners').insert(row).select().maybeSingle();
 
@@ -71,6 +75,8 @@ export const bannersService = {
     id: string,
     payload: Partial<{
       title: string;
+      description: string | null;
+      button_text: string | null;
       imageUri: string | null;
       link_url: string | null;
       sort_order: number;
@@ -82,6 +88,8 @@ export const bannersService = {
     const patch: Record<string, unknown> = {};
     if (payload.title !== undefined) patch.title = payload.title;
     if (payload.link_url !== undefined) patch.destination = payload.link_url;
+    if (payload.description !== undefined) patch.description = payload.description;
+    if (payload.button_text !== undefined) patch.button_text = payload.button_text;
     if (payload.sort_order !== undefined) patch.priority = payload.sort_order;
     if (payload.active !== undefined) patch.is_active = payload.active;
 

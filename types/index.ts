@@ -19,6 +19,7 @@ export interface Profile {
   games_played?: number;
   correct_answers?: number;
   push_enabled?: boolean;
+  appear_online?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -26,8 +27,22 @@ export interface Profile {
 export interface Category {
   id: string;
   name: string;
-  icon?: string | null;
+  description?: string | null;
+  icon?: string | null; // Ionicons name
+  image_url?: string | null;
+  accent?: string | null; // hex colour for the card
   sort_order: number;
+  is_active?: boolean;
+}
+
+/** A subject as shown to players: the category plus live numbers from get_categories(). */
+export interface Subject extends Category {
+  questions: number;
+  questions_needed: number;
+  playable: boolean;
+  played: number; // distinct players who have finished a match in this subject
+  waiting: number; // players searching in this subject right now
+  my_last_played?: string | null;
 }
 
 export interface Competition {
@@ -62,6 +77,8 @@ export interface QuizQuestion {
 export interface Banner {
   id: string;
   title: string;
+  description?: string | null;
+  button_text?: string | null;
   image_url?: string | null;
   link_url?: string | null;
   destination?: string | null;
@@ -203,12 +220,21 @@ export interface MatchPlayerLive {
 }
 
 export interface MatchState {
-  status: 'idle' | 'searching' | 'pending_accept' | 'active' | 'completed';
+  status: 'idle' | 'searching' | 'timeout' | 'invite_sent' | 'invite_ended' | 'pending_accept' | 'active' | 'completed';
   server_time: number;
   competition_id?: string;
   // searching
   waited_s?: number;
   fee?: number;
+  timeout_s?: number;
+  widen_s?: number;
+  category_id?: string | null;
+  category_name?: string | null;
+  refunded?: number; // timeout / invite_ended
+  // invite_sent / invite_ended
+  invite?: { id: string; to_name: string; to_avatar?: string | null; seconds_left: number };
+  reason?: 'declined' | 'expired';
+  to_name?: string;
   // pending_accept
   prize?: number;
   deadline?: number;
@@ -241,4 +267,26 @@ export interface MatchResult {
   total_questions: number;
   me: MatchResultPlayer;
   opponent: MatchResultPlayer;
+}
+
+export interface OnlinePlayer {
+  user_id: string;
+  name: string;
+  avatar_url?: string | null;
+  games_played: number;
+  wins: number;
+  here: boolean; // viewing this subject right now
+  plays_subject: boolean;
+  busy: boolean;
+}
+
+export interface IncomingInvite {
+  id: string;
+  from_name: string;
+  from_avatar?: string | null;
+  category_id?: string | null;
+  category_name?: string | null;
+  fee: number;
+  prize: number;
+  seconds_left: number;
 }

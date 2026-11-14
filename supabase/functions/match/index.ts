@@ -14,7 +14,10 @@ Deno.serve(async (req) => {
     let rpc: { fn: string; args: Record<string, unknown> };
 
     switch (b.action) {
-      case 'find':    rpc = { fn: 'find_match', args: { p_uid: uid } }; break;
+      case 'find':    rpc = { fn: 'find_match', args: { p_uid: uid, p_category: b.category_id ? String(b.category_id) : null } }; break;
+      case 'invite':        rpc = { fn: 'send_invite', args: { p_uid: uid, p_to: String(b.to_user), p_category: String(b.category_id) } }; break;
+      case 'invite_respond': rpc = { fn: 'respond_invite', args: { p_uid: uid, p_invite: String(b.invite_id), p_accept: b.accept === true } }; break;
+      case 'invite_cancel': rpc = { fn: 'cancel_invite', args: { p_uid: uid } }; break;
       case 'state':   rpc = { fn: 'match_state', args: { p_uid: uid } }; break;
       case 'cancel':  rpc = { fn: 'cancel_search', args: { p_uid: uid } }; break;
       case 'respond': rpc = { fn: 'respond_match', args: { p_uid: uid, p_comp: String(b.competition_id), p_accept: b.accept === true } }; break;

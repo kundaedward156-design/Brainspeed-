@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet } from 'react-native';
 import { Colors } from '@/constants/theme';
 import { AuthProvider } from '@/contexts/AuthContext';
+import { InviteListener } from '@/components/InviteListener';
 
 // Keep the native splash up until the animated splash (app/index.tsx) has drawn its first frame.
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -35,6 +36,7 @@ export default function RootLayout() {
           <Stack.Screen name="withdraw" />
           <Stack.Screen name="maintenance" />
         </Stack>
+        <InviteListener />
       </AuthProvider>
     </GestureHandlerRootView>
   );

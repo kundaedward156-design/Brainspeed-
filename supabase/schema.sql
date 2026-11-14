@@ -1,5 +1,5 @@
 -- ============================================================================
--- Brainspeed / Quivanta Quiz — complete database schema (v2, server-authoritative)
+-- Quivanta Quiz — complete database schema (v3: subjects, per-subject matchmaking)
 --
 -- SAFE TO RE-RUN. Run the whole file once in: Supabase Dashboard → SQL Editor.
 --
@@ -47,6 +47,10 @@ create table if not exists public.categories (
   sort_order int not null default 0,
   created_at timestamptz not null default now()
 );
+
+alter table public.categories add column if not exists icon text;
+alter table public.categories add column if not exists accent text;
+alter table public.categories add column if not exists last_nudge_at timestamptz;
 
 create table if not exists public.questions (
   id uuid primary key default gen_random_uuid(),
@@ -103,6 +107,8 @@ alter table public.competitions add column if not exists player1_time_ms bigint 
 alter table public.competitions add column if not exists player2_time_ms bigint not null default 0;
 alter table public.competitions add column if not exists is_draw boolean not null default false;
 alter table public.competitions add column if not exists cancelled_reason text;
+alter table public.competitions add column if not exists category_id uuid references public.categories (id) on delete set null;
+create index if not exists competitions_cat_idx on public.competitions (category_id, status);
 create index if not exists competitions_p1_idx on public.competitions (player1_id, status);
 create index if not exists competitions_p2_idx on public.competitions (player2_id, status);
 
@@ -128,6 +134,9 @@ create table if not exists public.match_queue (
   created_at timestamptz not null default now(),
   last_seen timestamptz not null default now()
 );
+
+alter table public.match_queue add column if not exists category_id uuid references public.categories (id) on delete set null;
+create index if not exists questions_cat_idx on public.questions (category_id) where is_active;
 
 create table if not exists public.rewards (
   id uuid primary key default gen_random_uuid(),
@@ -218,7 +227,8 @@ insert into public.app_settings (key, value) values
   ('scoring',       '{"points_per_correct": 5, "question_seconds": 30, "question_count": 10, "fastest_takes_point": true}'),
   ('wallet',        '{"min_deposit": 5, "max_deposit": 5000, "min_withdraw": 10, "max_withdraw": 5000}'),
   ('links',         '{"telegram_url": "", "privacy_url": "", "terms_url": "", "support_email": "", "whatsapp_url": ""}'),
-  ('maintenance',   '{"enabled": false, "message": ""}')
+  ('maintenance',   '{"enabled": false, "message": ""}'),
+  ('matchmaking',   '{"widen_after_s": 25, "timeout_s": 90, "nudges": true, "nudge_cooldown_min": 10}')
 on conflict (key) do nothing;
 
 -- Community link supplied by the client (only fills it in if the admin has not set one)
@@ -418,39 +428,86 @@ create or replace function public._try_pair()
 returns void language plpgsql security definer set search_path = public as $$
 declare
   a public.match_queue; b public.match_queue;
-  v_ids uuid[]; v_n int; v_comp uuid;
-  sc jsonb := public.setting('scoring'); fees jsonb := public.setting('platform_fees');
+  v_ids uuid[]; v_pool uuid[]; v_comp uuid;
+  sc jsonb := public.setting('scoring'); fees jsonb := public.setting('platform_fees'); mm jsonb := public.setting('matchmaking');
   v_count int := coalesce((sc->>'question_count')::int, 10);
   v_secs int := coalesce((sc->>'question_seconds')::int, 30);
   v_cfee numeric := coalesce((fees->>'competition_fee_zmw')::numeric, 20);
   v_pfee numeric := coalesce((fees->>'platform_fee_zmw')::numeric, 3);
+  v_widen interval := make_interval(secs => coalesce((mm->>'widen_after_s')::int, 25));
 begin
-  loop
-    select * into a from public.match_queue where last_seen > now() - interval '15 seconds'
-      order by created_at limit 1;
-    exit when not found;
-    select * into b from public.match_queue
-      where user_id <> a.user_id and last_seen > now() - interval '15 seconds'
-      order by created_at limit 1;
-    exit when not found;
+  for a in select * from public.match_queue where last_seen > now() - interval '15 seconds' order by created_at loop
+    continue when not exists (select 1 from public.match_queue where user_id = a.user_id);
+
+    select * into b from public.match_queue q
+     where q.user_id <> a.user_id and q.last_seen > now() - interval '15 seconds'
+       and ( q.category_id is not distinct from a.category_id
+             or q.category_id is null or a.category_id is null
+             or (a.created_at < now() - v_widen and q.created_at < now() - v_widen) )
+     order by (q.category_id is not distinct from a.category_id) desc, q.created_at
+     limit 1;
+    continue when not found;
+
+    v_pool := case
+      when a.category_id is null and b.category_id is null then null
+      when a.category_id is not distinct from b.category_id then array[a.category_id]
+      when a.category_id is null then array[b.category_id]
+      when b.category_id is null then array[a.category_id]
+      else array[a.category_id, b.category_id] end;
 
     select array_agg(id) into v_ids from (
-      select id from public.questions where is_active order by random() limit v_count) q;
-    v_n := coalesce(array_length(v_ids, 1), 0);
-    exit when v_n = 0;
+      select id from public.questions
+       where is_active and (v_pool is null or category_id = any(v_pool))
+       order by random() limit v_count) q;
+    continue when coalesce(array_length(v_ids, 1), 0) = 0;
 
     insert into public.competitions (
       player1_id, player2_id, status, entry_fee_zmw, competition_fee_zmw, platform_fee_zmw, prize_zmw,
-      question_ids, question_seconds, accept_deadline
+      question_ids, question_seconds, accept_deadline, category_id
     ) values (
       a.user_id, b.user_id, 'pending_accept', v_cfee + v_pfee, v_cfee, v_pfee * 2, v_cfee * 2,
-      v_ids, v_secs, now() + interval '20 seconds'
+      v_ids, v_secs, now() + interval '20 seconds', coalesce(a.category_id, b.category_id)
     ) returning id into v_comp;
 
     delete from public.match_queue where user_id in (a.user_id, b.user_id);
     perform public._notify(a.user_id, 'Match found', 'An opponent is ready. Accept to start the match.', 'match_found', jsonb_build_object('competition_id', v_comp));
     perform public._notify(b.user_id, 'Match found', 'An opponent is ready. Accept to start the match.', 'match_found', jsonb_build_object('competition_id', v_comp));
   end loop;
+end;
+$$;
+
+create or replace function public._nudge_category(p_cat uuid, p_uid uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  mm jsonb := public.setting('matchmaking');
+  v_cool interval := make_interval(mins => coalesce((mm->>'nudge_cooldown_min')::int, 10));
+  v_name text; v_n int;
+  v_prize numeric := coalesce((public.setting('platform_fees')->>'competition_fee_zmw')::numeric, 20) * 2;
+begin
+  if p_cat is null or coalesce((mm->>'nudges')::boolean, true) is not true then return; end if;
+  if not exists (select 1 from public.match_queue where user_id = p_uid) then return; end if;
+
+  select name into v_name from public.categories
+   where id = p_cat and (last_nudge_at is null or last_nudge_at < now() - v_cool);
+  if not found then return; end if;
+
+  insert into public.notifications (user_id, title, body, type, data)
+  select p.id, 'Someone is waiting in ' || v_name,
+         'Jump in now and play for K' || trim(to_char(v_prize, 'FM999999990.00')) || '.',
+         'nudge', jsonb_build_object('category_id', p_cat)
+    from public.profiles p
+   where p.id <> p_uid and p.push_enabled
+     and exists (select 1 from public.competitions c
+                  where c.category_id = p_cat and c.created_at > now() - interval '14 days'
+                    and p.id in (c.player1_id, c.player2_id))
+     and not exists (select 1 from public.match_queue q where q.user_id = p.id)
+     and not exists (select 1 from public.competitions c2
+                      where c2.status in ('pending_accept', 'active') and p.id in (c2.player1_id, c2.player2_id))
+     and not exists (select 1 from public.notifications n
+                      where n.user_id = p.id and n.type = 'nudge' and n.created_at > now() - interval '30 minutes')
+   limit 30;
+  get diagnostics v_n = row_count;
+  if v_n > 0 then update public.categories set last_nudge_at = now() where id = p_cat; end if;
 end;
 $$;
 
@@ -584,13 +641,20 @@ begin
   for r in select user_id, fee_zmw from public.match_queue where last_seen < now() - interval '30 seconds' loop
     delete from public.match_queue where user_id = r.user_id;
     perform public._credit(r.user_id, r.fee_zmw, null, 'entry_refund');
+    perform public._notify(r.user_id, 'Search ended', 'You left while searching, so your entry fee was refunded.', 'match_found', null);
   end loop;
+  perform public._try_pair();
 end;
 $$;
 
-create or replace function public.find_match(p_uid uuid)
+drop function if exists public.find_match(uuid);
+
+create or replace function public.find_match(p_uid uuid, p_category uuid default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_fee numeric := public._entry_fee();
+declare
+  v_fee numeric := public._entry_fee();
+  v_need int := coalesce((public.setting('scoring')->>'question_count')::int, 10);
+  v_n int;
 begin
   perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
   if (public.setting('maintenance')->>'enabled')::boolean is true then
@@ -599,11 +663,22 @@ begin
               and (player1_id = p_uid or player2_id = p_uid)) or exists (select 1 from public.match_queue where user_id = p_uid) then
     return public.match_state(p_uid);
   end if;
-  if not exists (select 1 from public.questions where is_active) then
-    raise exception 'No questions are available yet. Please try again later.'; end if;
+
+  if p_category is not null then
+    if not exists (select 1 from public.categories where id = p_category and is_active) then
+      raise exception 'This subject is not available.'; end if;
+    select count(*) into v_n from public.questions where is_active and category_id = p_category;
+  else
+    select count(*) into v_n from public.questions where is_active;
+  end if;
+  if v_n < v_need then
+    raise exception 'This subject does not have enough questions yet. Please choose another one.'; end if;
 
   perform public._debit(p_uid, v_fee, null, 'entry_fee');
-  perform public._enqueue(p_uid, v_fee);
+  insert into public.match_queue (user_id, fee_zmw, category_id) values (p_uid, v_fee, p_category)
+  on conflict (user_id) do update set last_seen = now();
+  perform public._try_pair();
+  perform public._nudge_category(p_category, p_uid);
   return public.match_state(p_uid);
 end;
 $$;
@@ -700,8 +775,26 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   c public.competitions; q public.match_queue; v_opp uuid; v_oppp public.profiles;
   v_total int; v_idx int; v_question public.questions; v_my public.answers; v_op public.answers;
-  v_ms1 int; v_ms2 int; v_score_me int; v_score_op int;
+  v_score_me int; v_score_op int; v_cat text;
+  mm jsonb := public.setting('matchmaking');
+  v_timeout int := coalesce((mm->>'timeout_s')::int, 90);
+  v_widen int := coalesce((mm->>'widen_after_s')::int, 25);
 begin
+  select * into q from public.match_queue where user_id = p_uid;
+  if found then
+    perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+    update public.match_queue set last_seen = now() where user_id = p_uid;
+    perform public._try_pair();
+    select * into q from public.match_queue where user_id = p_uid;
+    if found and q.created_at < now() - make_interval(secs => v_timeout) then
+      delete from public.match_queue where user_id = p_uid;
+      perform public._credit(p_uid, q.fee_zmw, null, 'entry_refund');
+      return jsonb_build_object('status', 'timeout', 'refunded', q.fee_zmw, 'category_id', q.category_id,
+        'category_name', (select name from public.categories where id = q.category_id),
+        'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+  end if;
+
   select * into c from public.competitions
    where status in ('pending_accept','active') and (player1_id = p_uid or player2_id = p_uid)
    order by created_at desc limit 1;
@@ -720,11 +813,12 @@ begin
   if not found or c.status not in ('pending_accept','active') then
     select * into q from public.match_queue where user_id = p_uid;
     if found then
-      update public.match_queue set last_seen = now() where user_id = p_uid;
       return jsonb_build_object('status', 'searching', 'waited_s', extract(epoch from (now() - q.created_at))::int,
-                                'fee', q.fee_zmw, 'server_time', (extract(epoch from now()) * 1000)::bigint);
+        'fee', q.fee_zmw, 'timeout_s', v_timeout, 'widen_s', v_widen,
+        'category_id', q.category_id,
+        'category_name', (select name from public.categories where id = q.category_id),
+        'server_time', (extract(epoch from now()) * 1000)::bigint);
     end if;
-    -- a match that just finished? point the app to the result
     select * into c from public.competitions
      where status = 'completed' and (player1_id = p_uid or player2_id = p_uid)
        and completed_at > now() - interval '2 minutes' order by completed_at desc limit 1;
@@ -736,10 +830,12 @@ begin
 
   v_opp := case when c.player1_id = p_uid then c.player2_id else c.player1_id end;
   select * into v_oppp from public.profiles where id = v_opp;
+  select name into v_cat from public.categories where id = c.category_id;
 
   if c.status = 'pending_accept' then
     return jsonb_build_object(
       'status', 'pending_accept', 'competition_id', c.id, 'fee', c.entry_fee_zmw, 'prize', c.prize_zmw,
+      'category_name', v_cat,
       'deadline', (extract(epoch from c.accept_deadline) * 1000)::bigint,
       'i_accepted', case when c.player1_id = p_uid then c.p1_accepted else c.p2_accepted end,
       'opponent', jsonb_build_object('name', public.mask_name(v_oppp.full_name), 'avatar_url', v_oppp.avatar_url),
@@ -756,6 +852,7 @@ begin
 
   return jsonb_build_object(
     'status', 'active', 'competition_id', c.id, 'server_time', (extract(epoch from now()) * 1000)::bigint,
+    'category_name', v_cat,
     'index', v_idx, 'total', v_total,
     'question_started_at', (extract(epoch from c.question_started_at) * 1000)::bigint,
     'question_seconds', c.question_seconds,
@@ -791,6 +888,47 @@ $$;
 -- ---------------------------------------------------------------------------
 -- 6. Public / player read functions (callable by signed-in users)
 -- ---------------------------------------------------------------------------
+create or replace function public.get_categories(p_all boolean default false)
+returns jsonb language sql stable security definer set search_path = public as $$
+  with need as (
+    select coalesce((public.setting('scoring')->>'question_count')::int, 10) as n
+  ),
+  qn as (
+    select category_id, count(*)::int as n from public.questions
+     where is_active and category_id is not null group by category_id
+  ),
+  pl as (
+    select category_id, count(distinct pid)::int as n from (
+      select category_id, player1_id as pid from public.competitions where status = 'completed' and category_id is not null
+      union all
+      select category_id, player2_id from public.competitions where status = 'completed' and category_id is not null
+    ) x group by category_id
+  ),
+  wt as (
+    select category_id, count(*)::int as n from public.match_queue
+     where last_seen > now() - interval '15 seconds' and category_id is not null group by category_id
+  ),
+  mine as (
+    select category_id, max(created_at) as last_played from public.competitions
+     where category_id is not null and auth.uid() in (player1_id, player2_id) group by category_id
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', c.id, 'name', c.name, 'description', c.description, 'icon', c.icon, 'image_url', c.image_url,
+    'accent', c.accent, 'sort_order', c.sort_order, 'is_active', c.is_active,
+    'questions', coalesce(qn.n, 0), 'questions_needed', need.n,
+    'playable', coalesce(qn.n, 0) >= need.n,
+    'played', coalesce(pl.n, 0), 'waiting', coalesce(wt.n, 0),
+    'my_last_played', mine.last_played
+  ) order by c.sort_order, c.name), '[]'::jsonb)
+  from public.categories c
+  cross join need
+  left join qn on qn.category_id = c.id
+  left join pl on pl.category_id = c.id
+  left join wt on wt.category_id = c.id
+  left join mine on mine.category_id = c.id
+  where c.is_active or (p_all and public.is_admin());
+$$;
+
 create or replace function public.get_leaderboard(p_limit int default 10)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
@@ -951,7 +1089,7 @@ begin
     'begin_deposit(uuid,numeric,text,text)', 'begin_withdrawal(uuid,numeric,text,text)',
     'settle_payment(text,text,jsonb,text)', '_entry_fee()', '_enqueue(uuid,numeric)', '_try_pair()',
     '_advance(uuid)', '_finalize(uuid)', '_expire_pending(uuid,text)', 'sweep_matches()',
-    'find_match(uuid)', 'cancel_search(uuid)', 'respond_match(uuid,uuid,boolean)',
+    'find_match(uuid,uuid)', '_nudge_category(uuid,uuid)', 'cancel_search(uuid)', 'respond_match(uuid,uuid,boolean)',
     'submit_answer(uuid,uuid,int,int)', 'match_state(uuid)', 'match_result(uuid,uuid)'
   ] loop
     execute format('revoke all on function public.%s from public, anon, authenticated', f);
@@ -960,7 +1098,7 @@ begin
   -- is_admin() and setting() stay callable by everyone: RLS policies use them
   -- player / admin RPCs (admin ones check is_admin() inside)
   foreach f in array array[
-    'get_leaderboard(int)', 'get_wallet_history(int)', 'admin_stats()', 'admin_list_transactions(text,int)',
+    'get_leaderboard(int)', 'get_categories(boolean)', 'get_wallet_history(int)', 'admin_stats()', 'admin_list_transactions(text,int)',
     'admin_list_matches(int)', 'admin_send_announcement(text,text)'
   ] loop
     execute format('revoke all on function public.%s from public, anon', f);
@@ -1010,3 +1148,419 @@ end $$;
 
 -- Make yourself admin (replace the email), run once:
 --   update public.profiles set role = 'admin' where email = 'you@example.com';
+
+-- ============ v4: online presence and player invitations ============
+-- v4 upgrade 1/7: who is online, and invitations
+alter table public.profiles add column if not exists appear_online boolean not null default true;
+grant update (appear_online) on public.profiles to authenticated;
+
+create table if not exists public.presence (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  last_seen timestamptz not null default now(),
+  category_id uuid references public.categories (id) on delete set null
+);
+alter table public.presence enable row level security;
+revoke all on public.presence from anon, authenticated;
+
+create table if not exists public.match_invites (
+  id uuid primary key default gen_random_uuid(),
+  from_user uuid not null references public.profiles (id) on delete cascade,
+  to_user uuid not null references public.profiles (id) on delete cascade,
+  category_id uuid references public.categories (id) on delete set null,
+  fee_zmw numeric(12,2) not null,
+  status text not null default 'pending' check (status in ('pending', 'accepted', 'declined', 'expired', 'cancelled')),
+  from_seen boolean not null default false,
+  competition_id uuid references public.competitions (id) on delete set null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null
+);
+create index if not exists match_invites_from_idx on public.match_invites (from_user, status);
+create index if not exists match_invites_to_idx on public.match_invites (to_user, status);
+alter table public.match_invites enable row level security;
+drop policy if exists invites_read on public.match_invites;
+create policy invites_read on public.match_invites for select
+  using (from_user = auth.uid() or to_user = auth.uid() or public.is_admin());
+revoke insert, update, delete on public.match_invites from anon, authenticated;
+
+do $$
+begin
+  begin alter publication supabase_realtime add table public.match_invites; exception when others then null; end;
+end $$;
+
+update public.app_settings set value = value || '{"invite_ttl_s": 60}'
+ where key = 'matchmaking' and not (value ? 'invite_ttl_s');
+
+-- v4 upgrade 2/7: helpers and sending an invitation (the sender's entry fee is held)
+create or replace function public._busy(p_uid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.match_queue where user_id = p_uid)
+      or exists (select 1 from public.competitions
+                  where status in ('pending_accept', 'active') and p_uid in (player1_id, player2_id))
+      or exists (select 1 from public.match_invites
+                  where from_user = p_uid and status = 'pending' and expires_at > now());
+$$;
+
+create or replace function public._end_invite(p_id uuid, p_status text)
+returns void language plpgsql security definer set search_path = public as $$
+declare i public.match_invites;
+begin
+  select * into i from public.match_invites where id = p_id for update;
+  if not found or i.status <> 'pending' then return; end if;
+  update public.match_invites set status = p_status, from_seen = (p_status = 'cancelled') where id = i.id;
+  perform public._credit(i.from_user, i.fee_zmw, null, 'entry_refund');
+end;
+$$;
+
+create or replace function public._expire_stale_invites()
+returns void language plpgsql security definer set search_path = public as $$
+declare r record;
+begin
+  for r in select id from public.match_invites where status = 'pending' and expires_at < now() loop
+    perform public._end_invite(r.id, 'expired');
+  end loop;
+end;
+$$;
+
+create or replace function public.send_invite(p_uid uuid, p_to uuid, p_category uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_fee numeric := public._entry_fee();
+  v_need int := coalesce((public.setting('scoring')->>'question_count')::int, 10);
+  v_ttl int := coalesce((public.setting('matchmaking')->>'invite_ttl_s')::int, 60);
+  v_prize numeric := coalesce((public.setting('platform_fees')->>'competition_fee_zmw')::numeric, 20) * 2;
+  v_n int; v_inv uuid; v_name text; v_cat text;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  if (public.setting('maintenance')->>'enabled')::boolean is true then
+    raise exception 'The app is under maintenance. Please try again later.'; end if;
+  perform public._expire_stale_invites();
+
+  if p_to is null or p_to = p_uid then raise exception 'Choose another player to invite.'; end if;
+  if p_category is null or not exists (select 1 from public.categories where id = p_category and is_active) then
+    raise exception 'Choose a subject to play.'; end if;
+  select count(*) into v_n from public.questions where is_active and category_id = p_category;
+  if v_n < v_need then raise exception 'This subject does not have enough questions yet.'; end if;
+
+  if public._busy(p_uid) then raise exception 'Finish or cancel your current search or match first.'; end if;
+  if not exists (select 1 from public.presence pr join public.profiles p on p.id = pr.user_id
+                  where pr.user_id = p_to and pr.last_seen > now() - interval '45 seconds' and p.appear_online) then
+    raise exception 'That player is no longer online.'; end if;
+  if public._busy(p_to) then raise exception 'That player is in a match right now.'; end if;
+  if exists (select 1 from public.match_invites
+              where from_user = p_uid and to_user = p_to and created_at > now() - interval '2 minutes') then
+    raise exception 'You just invited this player. Please wait a little before inviting again.'; end if;
+  if (select count(*) from public.match_invites
+       where from_user = p_uid and created_at > now() - interval '10 minutes') >= 6 then
+    raise exception 'Too many invitations. Please try again in a few minutes.'; end if;
+
+  perform public._debit(p_uid, v_fee, null, 'entry_fee');
+  insert into public.match_invites (from_user, to_user, category_id, fee_zmw, expires_at)
+  values (p_uid, p_to, p_category, v_fee, now() + make_interval(secs => v_ttl)) returning id into v_inv;
+
+  select public.mask_name(full_name) into v_name from public.profiles where id = p_uid;
+  select name into v_cat from public.categories where id = p_category;
+  perform public._notify(p_to, v_name || ' invited you to play',
+    v_cat || ' · entry K' || trim(to_char(v_fee, 'FM999999990.00')) || ' · winner takes K' || trim(to_char(v_prize, 'FM999999990.00')),
+    'invite', jsonb_build_object('invite_id', v_inv, 'category_id', p_category));
+  return public.match_state(p_uid);
+end;
+$$;
+
+-- v4 upgrade 3/7: accept, decline and cancel an invitation
+create or replace function public.respond_invite(p_uid uuid, p_invite uuid, p_accept boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  i public.match_invites;
+  fees jsonb := public.setting('platform_fees'); sc jsonb := public.setting('scoring');
+  v_count int := coalesce((sc->>'question_count')::int, 10);
+  v_secs int := coalesce((sc->>'question_seconds')::int, 30);
+  v_cfee numeric := coalesce((fees->>'competition_fee_zmw')::numeric, 20);
+  v_pfee numeric := coalesce((fees->>'platform_fee_zmw')::numeric, 3);
+  v_ids uuid[]; v_comp uuid; v_name text;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  perform public._expire_stale_invites();
+  select * into i from public.match_invites where id = p_invite for update;
+  if not found or i.to_user <> p_uid then raise exception 'Invitation not found.'; end if;
+  if i.status in ('expired', 'cancelled') then raise exception 'This invitation is no longer available.'; end if;
+  if i.status <> 'pending' then return public.match_state(p_uid); end if;
+
+  select public.mask_name(full_name) into v_name from public.profiles where id = p_uid;
+
+  if not p_accept then
+    perform public._end_invite(i.id, 'declined');
+    perform public._notify(i.from_user, 'Invitation declined',
+      v_name || ' declined your invitation. Your entry fee was refunded.', 'invite_result',
+      jsonb_build_object('invite_id', i.id));
+    return jsonb_build_object('status', 'idle');
+  end if;
+
+  if public._busy(p_uid) then raise exception 'Finish your current match or search first.'; end if;
+  if exists (select 1 from public.competitions
+              where status in ('pending_accept', 'active') and i.from_user in (player1_id, player2_id)) then
+    raise exception 'That player is already in a match.'; end if;
+
+  select array_agg(id) into v_ids from (
+    select id from public.questions where is_active and category_id = i.category_id order by random() limit v_count) q;
+  if coalesce(array_length(v_ids, 1), 0) = 0 then raise exception 'This subject does not have enough questions yet.'; end if;
+
+  perform public._debit(p_uid, i.fee_zmw, null, 'entry_fee');
+
+  insert into public.competitions (
+    player1_id, player2_id, status, entry_fee_zmw, competition_fee_zmw, platform_fee_zmw, prize_zmw,
+    question_ids, question_seconds, category_id,
+    p1_accepted, p2_accepted, started_at, current_index, question_started_at
+  ) values (
+    i.from_user, p_uid, 'active', i.fee_zmw, v_cfee, v_pfee * 2, v_cfee * 2,
+    v_ids, v_secs, i.category_id,
+    true, true, now(), 0, now() + interval '4 seconds'
+  ) returning id into v_comp;
+
+  update public.match_invites set status = 'accepted', competition_id = v_comp, from_seen = true where id = i.id;
+  perform public._notify(i.from_user, 'Match starting', v_name || ' accepted. Get ready!', 'match_start',
+    jsonb_build_object('competition_id', v_comp));
+  return public.match_state(p_uid);
+end;
+$$;
+
+create or replace function public.cancel_invite(p_uid uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_id uuid;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  select id into v_id from public.match_invites
+   where from_user = p_uid and status = 'pending' order by created_at desc limit 1;
+  if found then perform public._end_invite(v_id, 'cancelled'); end if;
+  return jsonb_build_object('status', 'idle');
+end;
+$$;
+
+-- v4 upgrade 4/7: searching is blocked while an invitation is out; the sweeper also expires invitations
+create or replace function public.find_match(p_uid uuid, p_category uuid default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_fee numeric := public._entry_fee();
+  v_need int := coalesce((public.setting('scoring')->>'question_count')::int, 10);
+  v_n int;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  if (public.setting('maintenance')->>'enabled')::boolean is true then
+    raise exception 'The app is under maintenance. Please try again later.'; end if;
+  perform public._expire_stale_invites();
+  if public._busy(p_uid) then
+    return public.match_state(p_uid);
+  end if;
+
+  if p_category is not null then
+    if not exists (select 1 from public.categories where id = p_category and is_active) then
+      raise exception 'This subject is not available.'; end if;
+    select count(*) into v_n from public.questions where is_active and category_id = p_category;
+  else
+    select count(*) into v_n from public.questions where is_active;
+  end if;
+  if v_n < v_need then
+    raise exception 'This subject does not have enough questions yet. Please choose another one.'; end if;
+
+  perform public._debit(p_uid, v_fee, null, 'entry_fee');
+  insert into public.match_queue (user_id, fee_zmw, category_id) values (p_uid, v_fee, p_category)
+  on conflict (user_id) do update set last_seen = now();
+  perform public._try_pair();
+  perform public._nudge_category(p_category, p_uid);
+  return public.match_state(p_uid);
+end;
+$$;
+
+create or replace function public.sweep_matches()
+returns void language plpgsql security definer set search_path = public as $$
+declare r record;
+begin
+  perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+  for r in select id from public.competitions where status = 'pending_accept' and accept_deadline < now() loop
+    perform public._expire_pending(r.id, 'timeout');
+  end loop;
+  for r in select id from public.competitions where status = 'active' loop
+    perform public._advance(r.id);
+  end loop;
+  for r in select user_id, fee_zmw from public.match_queue where last_seen < now() - interval '30 seconds' loop
+    delete from public.match_queue where user_id = r.user_id;
+    perform public._credit(r.user_id, r.fee_zmw, null, 'entry_refund');
+    perform public._notify(r.user_id, 'Search ended', 'You left while searching, so your entry fee was refunded.', 'match_found', null);
+  end loop;
+  perform public._expire_stale_invites();
+  perform public._try_pair();
+end;
+$$;
+
+-- v4 upgrade 5/7: match_state also reports an outgoing invitation (waiting, declined, expired)
+create or replace function public.match_state(p_uid uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  c public.competitions; q public.match_queue; v_opp uuid; v_oppp public.profiles;
+  v_total int; v_idx int; v_question public.questions; v_my public.answers; v_op public.answers;
+  v_score_me int; v_score_op int; v_cat text; inv public.match_invites;
+  mm jsonb := public.setting('matchmaking');
+  v_timeout int := coalesce((mm->>'timeout_s')::int, 90);
+  v_widen int := coalesce((mm->>'widen_after_s')::int, 25);
+begin
+  perform public._expire_stale_invites();
+  select * into q from public.match_queue where user_id = p_uid;
+  if found then
+    perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+    update public.match_queue set last_seen = now() where user_id = p_uid;
+    perform public._try_pair();
+    select * into q from public.match_queue where user_id = p_uid;
+    if found and q.created_at < now() - make_interval(secs => v_timeout) then
+      delete from public.match_queue where user_id = p_uid;
+      perform public._credit(p_uid, q.fee_zmw, null, 'entry_refund');
+      return jsonb_build_object('status', 'timeout', 'refunded', q.fee_zmw, 'category_id', q.category_id,
+        'category_name', (select name from public.categories where id = q.category_id),
+        'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+  end if;
+
+  select * into c from public.competitions
+   where status in ('pending_accept','active') and (player1_id = p_uid or player2_id = p_uid)
+   order by created_at desc limit 1;
+
+  if found then
+    if c.status = 'active' then
+      perform public._advance(c.id);
+      select * into c from public.competitions where id = c.id;
+    elsif c.accept_deadline < now() then
+      perform pg_advisory_xact_lock(hashtext('brainspeed_matchmaking'));
+      perform public._expire_pending(c.id, 'timeout');
+      select * into c from public.competitions where id = c.id;
+    end if;
+  end if;
+
+  if not found or c.status not in ('pending_accept','active') then
+    select * into q from public.match_queue where user_id = p_uid;
+    if found then
+      return jsonb_build_object('status', 'searching', 'waited_s', extract(epoch from (now() - q.created_at))::int,
+        'fee', q.fee_zmw, 'timeout_s', v_timeout, 'widen_s', v_widen,
+        'category_id', q.category_id,
+        'category_name', (select name from public.categories where id = q.category_id),
+        'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+    select * into inv from public.match_invites where from_user = p_uid and status = 'pending' order by created_at desc limit 1;
+    if found then
+      return jsonb_build_object('status', 'invite_sent',
+        'invite', jsonb_build_object('id', inv.id,
+          'to_name', (select public.mask_name(full_name) from public.profiles where id = inv.to_user),
+          'to_avatar', (select avatar_url from public.profiles where id = inv.to_user),
+          'seconds_left', greatest(0, extract(epoch from (inv.expires_at - now()))::int)),
+        'category_id', inv.category_id,
+        'category_name', (select name from public.categories where id = inv.category_id),
+        'fee', inv.fee_zmw, 'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+    select * into inv from public.match_invites
+     where from_user = p_uid and status in ('declined', 'expired') and not from_seen order by created_at desc limit 1;
+    if found then
+      update public.match_invites set from_seen = true where id = inv.id;
+      return jsonb_build_object('status', 'invite_ended', 'reason', inv.status, 'refunded', inv.fee_zmw,
+        'to_name', (select public.mask_name(full_name) from public.profiles where id = inv.to_user),
+        'category_id', inv.category_id,
+        'category_name', (select name from public.categories where id = inv.category_id),
+        'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+    select * into c from public.competitions
+     where status = 'completed' and (player1_id = p_uid or player2_id = p_uid)
+       and completed_at > now() - interval '2 minutes' order by completed_at desc limit 1;
+    if found then
+      return jsonb_build_object('status', 'completed', 'competition_id', c.id, 'server_time', (extract(epoch from now()) * 1000)::bigint);
+    end if;
+    return jsonb_build_object('status', 'idle', 'server_time', (extract(epoch from now()) * 1000)::bigint);
+  end if;
+
+  v_opp := case when c.player1_id = p_uid then c.player2_id else c.player1_id end;
+  select * into v_oppp from public.profiles where id = v_opp;
+  select name into v_cat from public.categories where id = c.category_id;
+
+  if c.status = 'pending_accept' then
+    return jsonb_build_object(
+      'status', 'pending_accept', 'competition_id', c.id, 'fee', c.entry_fee_zmw, 'prize', c.prize_zmw,
+      'category_name', v_cat,
+      'deadline', (extract(epoch from c.accept_deadline) * 1000)::bigint,
+      'i_accepted', case when c.player1_id = p_uid then c.p1_accepted else c.p2_accepted end,
+      'opponent', jsonb_build_object('name', public.mask_name(v_oppp.full_name), 'avatar_url', v_oppp.avatar_url),
+      'server_time', (extract(epoch from now()) * 1000)::bigint);
+  end if;
+
+  v_total := coalesce(array_length(c.question_ids, 1), 0);
+  v_idx := c.current_index;
+  select * into v_question from public.questions where id = c.question_ids[v_idx + 1];
+  select * into v_my from public.answers where competition_id = c.id and player_id = p_uid and question_index = v_idx;
+  select * into v_op from public.answers where competition_id = c.id and player_id = v_opp and question_index = v_idx;
+  select coalesce(sum(points_earned), 0) into v_score_me from public.answers where competition_id = c.id and player_id = p_uid;
+  select coalesce(sum(points_earned), 0) into v_score_op from public.answers where competition_id = c.id and player_id = v_opp;
+
+  return jsonb_build_object(
+    'status', 'active', 'competition_id', c.id, 'server_time', (extract(epoch from now()) * 1000)::bigint,
+    'category_name', v_cat,
+    'index', v_idx, 'total', v_total,
+    'question_started_at', (extract(epoch from c.question_started_at) * 1000)::bigint,
+    'question_seconds', c.question_seconds,
+    'question', jsonb_build_object('id', v_question.id, 'text', v_question.text, 'image_url', v_question.image_url, 'options', v_question.options),
+    'me', jsonb_build_object('score', v_score_me, 'answered', v_my.id is not null, 'selected', v_my.selected_index,
+                             'correct', v_my.is_correct, 'points', v_my.points_earned,
+                             'correct_index', case when v_my.id is not null then v_question.correct_index end),
+    'opponent', jsonb_build_object('name', public.mask_name(v_oppp.full_name), 'avatar_url', v_oppp.avatar_url,
+                                   'score', v_score_op, 'answered', v_op.id is not null));
+end;
+$$;
+
+-- v4 upgrade 6/7: heartbeat, the online list, and my incoming invitations
+create or replace function public.ping_presence(p_category uuid default null)
+returns void language sql security definer set search_path = public as $$
+  insert into public.presence (user_id, last_seen, category_id)
+  select auth.uid(), now(), p_category where auth.uid() is not null
+  on conflict (user_id) do update set last_seen = now(), category_id = excluded.category_id;
+$$;
+
+create or replace function public.online_players(p_category uuid default null)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(x order by x.here desc, x.plays_subject desc, x.last_seen desc), '[]'::jsonb) from (
+    select p.id as user_id, public.mask_name(p.full_name) as name, p.avatar_url, p.games_played, p.wins,
+           (p_category is not null and pr.category_id is not distinct from p_category) as here,
+           exists (select 1 from public.competitions c
+                    where c.category_id = p_category and c.status = 'completed'
+                      and p.id in (c.player1_id, c.player2_id)) as plays_subject,
+           public._busy(p.id) as busy, pr.last_seen
+      from public.presence pr join public.profiles p on p.id = pr.user_id
+     where pr.last_seen > now() - interval '45 seconds' and p.appear_online and p.id <> auth.uid()
+     order by (p_category is not null and pr.category_id is not distinct from p_category) desc, pr.last_seen desc
+     limit 40) x;
+$$;
+
+create or replace function public.my_invites()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', i.id, 'from_name', public.mask_name(p.full_name), 'from_avatar', p.avatar_url,
+    'category_id', i.category_id, 'category_name', c.name, 'fee', i.fee_zmw,
+    'prize', coalesce((public.setting('platform_fees')->>'competition_fee_zmw')::numeric, 20) * 2,
+    'seconds_left', greatest(0, extract(epoch from (i.expires_at - now()))::int)
+  ) order by i.created_at desc), '[]'::jsonb)
+  from public.match_invites i
+  join public.profiles p on p.id = i.from_user
+  left join public.categories c on c.id = i.category_id
+  where i.to_user = auth.uid() and i.status = 'pending' and i.expires_at > now()
+    and not public._busy(auth.uid());
+$$;
+
+-- v4 upgrade 7/7: permissions (money-moving functions stay server-only)
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    '_busy(uuid)', '_end_invite(uuid,text)', '_expire_stale_invites()',
+    'send_invite(uuid,uuid,uuid)', 'respond_invite(uuid,uuid,boolean)', 'cancel_invite(uuid)'
+  ] loop
+    execute format('revoke all on function public.%s from public, anon, authenticated', f);
+    execute format('grant execute on function public.%s to service_role', f);
+  end loop;
+  foreach f in array array['ping_presence(uuid)', 'online_players(uuid)', 'my_invites()'] loop
+    execute format('revoke all on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated, service_role', f);
+  end loop;
+end $$;
+

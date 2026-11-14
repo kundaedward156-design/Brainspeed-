@@ -25,3 +25,11 @@ export function initials(name?: string | null): string {
   if (parts.length === 0) return 'P';
   return (parts[0][0] + (parts[1]?.[0] ?? '')).toUpperCase();
 }
+
+/** 1234 → "1.2K", 2500000 → "2.5M". Used for player counts. */
+export function formatCount(n?: number | null): string {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return String(v);
+  if (v < 1_000_000) return `${(v / 1000).toFixed(v < 10_000 ? 1 : 0).replace(/\.0$/, '')}K`;
+  return `${(v / 1_000_000).toFixed(v < 10_000_000 ? 1 : 0).replace(/\.0$/, '')}M`;
+}

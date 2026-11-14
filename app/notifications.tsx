@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '@/components/ui/Screen';
 import { Header } from '@/components/ui/Header';
@@ -18,11 +19,15 @@ const ICONS: Record<string, { name: keyof typeof Ionicons.glyphMap; color: strin
   prize: { name: 'trophy', color: Colors.accent },
   deposit: { name: 'arrow-down-circle', color: Colors.success },
   withdrawal: { name: 'arrow-up-circle', color: Colors.info },
+  nudge: { name: 'flame', color: Colors.accent },
+  invite: { name: 'person-add', color: Colors.primary },
+  invite_result: { name: 'person-remove', color: Colors.textMuted },
   system: { name: 'megaphone', color: Colors.warning },
 };
 
 export default function NotificationsScreen() {
   const { profile } = useAuth();
+  const router = useRouter();
   const [items, setItems] = useState<AppNotification[]>([]);
 
   const load = useCallback(async () => {
@@ -50,8 +55,14 @@ export default function NotificationsScreen() {
         <View style={styles.list}>
           {items.map((n, i) => {
             const ic = ICONS[n.type] ?? ICONS.system;
+            const cat = (n as any).data?.category_id as string | undefined;
             return (
-              <View key={n.id} style={[styles.item, i < items.length - 1 && styles.divider]}>
+              <TouchableOpacity
+                key={n.id}
+                activeOpacity={cat ? 0.7 : 1}
+                onPress={cat ? () => router.push({ pathname: '/category/[id]', params: { id: cat } }) : undefined}
+                style={[styles.item, i < items.length - 1 && styles.divider]}
+              >
                 <View style={[styles.icon, { backgroundColor: Colors.primarySoft }]}>
                   <Ionicons name={ic.name} size={20} color={ic.color} />
                 </View>
@@ -60,7 +71,8 @@ export default function NotificationsScreen() {
                   <Text style={styles.body}>{n.body}</Text>
                   <Text style={styles.time}>{timeAgo(n.created_at)}</Text>
                 </View>
-              </View>
+                {cat ? <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} style={{ alignSelf: 'center' }} /> : null}
+              </TouchableOpacity>
             );
           })}
         </View>

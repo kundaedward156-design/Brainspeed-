@@ -115,3 +115,40 @@ All numbers (fees, points, seconds, question count, withdrawal limits) live in t
 * **Points rule:** "award the point to the fastest correct answer" is implemented per question; set `fastest_takes_point` to `false` in the `scoring` setting if both correct players should get 5.
 * **Splash on Android 12+:** the OS limits the *native* splash to an icon; the animated full-screen splash starts immediately after it.
 * Lipila endpoint paths follow their public API (`/collections/mobile-money`, `/disbursements/mobile-money`, `/…/check-status`). If your account uses different paths, only `supabase/functions/_shared/lipila.ts` needs editing.
+
+
+## Subjects, player counts and matchmaking (v3)
+
+**What players see**
+- Home: large banner carousel, "Continue playing" (their recent subjects), "Hot subjects" and every subject as a card with the number of players who have finished a match in it. A green "N waiting" badge shows when someone is searching right now.
+- Each subject has its own page (cover, players, waiting now, the 10-question head-to-head, entry and prize) and its own matchmaking queue.
+- Counts are real. A brand-new subject shows "New" until the first match is finished.
+
+**What the admin does** (Admin → Content)
+1. *Subjects*: add a subject with a name, colour, icon and optional cover image. Each row shows `questions/10` and turns "ready" at 10 active questions.
+2. *Questions*: every question belongs to a subject. A subject cannot be played until it has at least 10 active questions (the number comes from Scoring → questions per match, default 10).
+3. *Banners*: title, short line, button text and where it opens (a web link or a subject).
+
+**Matchmaking rules** (settings row `matchmaking`, editable in SQL)
+| Setting | Default | Meaning |
+|---|---|---|
+| `widen_after_s` | 25 | After this many seconds two waiting players from different subjects can be paired; their questions are mixed from both subjects. A "quick match" player pairs with anyone at once. |
+| `timeout_s` | 90 | No opponent by now: the entry fee is refunded automatically and the player is told. |
+| `nudges` | true | When someone starts waiting in a subject, up to 30 recent players of that subject get a notification (max one per 30 minutes each). |
+| `nudge_cooldown_min` | 10 | Minimum gap between nudges for one subject. |
+
+Example: `update public.app_settings set value = value || '{"timeout_s": 120}' where key = 'matchmaking';`
+
+Players are never charged for a match that does not happen: refunds cover timeout, cancel, decline and an app closed while searching.
+
+**Upgrading a database that already has v2**: run `supabase/upgrade-v3/u1_tables.sql` … `u6_permissions.sql` in order (all safe to re-run), then redeploy the `match` Edge Function.
+
+## Online players and invites (v4)
+
+Players on a subject page see who is online (masked names) and can invite them to a duel, in addition to normal searching.
+
+1. Run the SQL pieces in `supabase/upgrade-v4/` in order: `w1_tables.sql` … `w7_permissions.sql` (or just run the new `schema.sql` on a fresh project).
+2. Redeploy the `match` edge function (it has three new actions: `invite`, `invite_respond`, `invite_cancel`).
+3. Rules: an invite holds the sender's entry fee for 60 seconds (`matchmaking.invite_ttl_s` in app settings). Declined, expired or cancelled invites refund automatically. Accepting charges the invitee and starts the match with both players ready.
+4. A player counts as online if the app pinged in the last 45 seconds. Players can hide themselves in Profile → "Show me as online".
+5. Invite limits: same player once per 2 minutes, at most 6 invites per 10 minutes.

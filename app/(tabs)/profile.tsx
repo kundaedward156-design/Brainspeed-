@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, Text, StyleSheet, Alert, Switch } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Screen } from '@/components/ui/Screen';
 import { Header } from '@/components/ui/Header';
@@ -10,6 +10,7 @@ import { Colors, Spacing, Typography, BorderRadius } from '@/constants/theme';
 import { AppConfig } from '@/constants/config';
 import { authService } from '@/services/auth';
 import { adminService } from '@/services/admin';
+import { profilesService } from '@/services/profiles';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLinks, openLink, openSupport } from '@/hooks/useLinks';
 import { toLocalZm } from '@/utils/phone';
@@ -26,6 +27,13 @@ export default function ProfileScreen() {
       adminService.isAdmin().then(setIsAdmin);
     }, [refresh])
   );
+
+  const toggleOnline = async (value: boolean) => {
+    if (!profile) return;
+    const { error } = await profilesService.update(profile.id, { appear_online: value });
+    if (error) return Alert.alert('Could not save', 'Please try again.');
+    refresh();
+  };
 
   const logout = () =>
     Alert.alert('Log out', 'Are you sure you want to log out?', [
@@ -52,6 +60,14 @@ export default function ProfileScreen() {
         <Stat label="Wins" value={wins} />
         <Stat label="Win rate" value={`${rate}%`} />
         <Stat label="Points" value={profile?.total_score ?? 0} />
+      </View>
+
+      <View style={styles.onlineRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.onlineTitle}>Show me as online</Text>
+          <Text style={styles.onlineHint}>Other players can see you in a subject and invite you to a duel.</Text>
+        </View>
+        <Switch value={profile?.appear_online !== false} onValueChange={toggleOnline} trackColor={{ true: Colors.primary }} />
       </View>
 
       <Text style={styles.section}>Account</Text>
@@ -87,6 +103,9 @@ function Stat({ label, value }: { label: string; value: number | string }) {
 }
 
 const styles = StyleSheet.create({
+  onlineRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.lg },
+  onlineTitle: { color: Colors.text, fontSize: Typography.size.md, fontWeight: '700' },
+  onlineHint: { color: Colors.textSecondary, fontSize: Typography.size.xs, marginTop: 2, lineHeight: 16 },
   top: { alignItems: 'center', marginBottom: Spacing.xl },
   name: { color: Colors.text, fontSize: Typography.size.xxl, fontWeight: '800', marginTop: Spacing.md },
   contact: { color: Colors.textSecondary, marginTop: 4 },
