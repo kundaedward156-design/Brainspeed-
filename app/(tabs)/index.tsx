@@ -1,7 +1,7 @@
 /**
  * Home dashboard — wallet, quick play, top players, community and legal links.
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, RefreshControl, ScrollView } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,17 +20,26 @@ import { settingsService } from '@/services/settings';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLinks, openLink, openSupport } from '@/hooks/useLinks';
 import { useSubjects } from '@/hooks/useSubjects';
+import { OnlineNow } from '@/components/home/OnlineNow';
+import { cacheGet, cacheLoad, cacheSet } from '@/utils/cache';
 import type { Banner, LeaderboardEntry, Subject } from '@/types';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { profile, refresh } = useAuth();
   const links = useLinks();
-  const { subjects, reload } = useSubjects();
-  const [banners, setBanners] = useState<Banner[]>([]);
-  const [top, setTop] = useState<LeaderboardEntry[]>([]);
+  const { subjects, loading: subjectsLoading, reload } = useSubjects();
+  const [banners, setBanners] = useState<Banner[]>(cacheGet<Banner[]>('home:banners') ?? []);
+  const [top, setTop] = useState<LeaderboardEntry[]>(cacheGet<LeaderboardEntry[]>('home:top') ?? []);
+  const [topReady, setTopReady] = useState(cacheGet('home:top') !== undefined);
   const [unread, setUnread] = useState(0);
-  const [fees, setFees] = useState({ entry: 23, prize: 40 });
+  const [fees, setFees] = useState(cacheGet<{ entry: number; prize: number }>('home:fees') ?? { entry: 23, prize: 40 });
+
+  useEffect(() => {
+    cacheLoad<Banner[]>('home:banners').then((v) => v && setBanners((c) => (c.length ? c : v)));
+    cacheLoad<LeaderboardEntry[]>('home:top').then((v) => { if (v) { setTop((c) => (c.length ? c : v)); setTopReady(true); } });
+    cacheLoad<{ entry: number; prize: number }>('home:fees').then((v) => v && setFees(v));
+  }, []);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
@@ -39,9 +48,10 @@ export default function HomeScreen() {
       leaderboardService.get(3),
       settingsService.getPlatformFees(),
     ]);
-    setBanners(b.data ?? []);
-    setTop(lb.data.top);
-    setFees({ entry: f.data.platform_fee_zmw + f.data.competition_fee_zmw, prize: f.data.competition_fee_zmw * 2 });
+    const nf = { entry: f.data.platform_fee_zmw + f.data.competition_fee_zmw, prize: f.data.competition_fee_zmw * 2 };
+    setBanners(b.data ?? []); cacheSet('home:banners', b.data ?? []);
+    setTop(lb.data.top); setTopReady(true); cacheSet('home:top', lb.data.top);
+    setFees(nf); cacheSet('home:fees', nf);
     if (profile?.id) setUnread(await notificationsService.unreadCount(profile.id));
     await refresh();
   }, [profile?.id, refresh]);
@@ -153,11 +163,16 @@ export default function HomeScreen() {
       {subjects.length > 6 ? null : (
         <Text style={styles.caption}>Entry {formatMoney(fees.entry)} · Winner takes {formatMoney(fees.prize)} · 10 questions</Text>
       )}
-      {subjects.length === 0 ? (
+      {subjects.length === 0 && subjectsLoading ? (
+        <View style={styles.skelRow}>{[0, 1, 2].map((i) => <View key={i} style={styles.skelTile} />)}</View>
+      ) : subjects.length === 0 ? (
         <View style={styles.card}><Text style={styles.empty}>Subjects will appear here as soon as they are added.</Text></View>
       ) : (
         <SubjectGrid items={subjects} onPress={openSubject} />
       )}
+
+      {/* who is online */}
+      <OnlineNow subjects={subjects} />
 
       {/* top players */}
       <View style={styles.sectionRow}>
@@ -167,7 +182,9 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
       <View style={styles.card}>
-        {top.length === 0 ? (
+        {top.length === 0 && !topReady ? (
+          <View style={styles.skelLine} />
+        ) : top.length === 0 ? (
           <Text style={styles.empty}>No rankings yet — play a match to get on the board.</Text>
         ) : (
           top.map((p, i) => (
@@ -206,6 +223,9 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
+  skelRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.lg },
+  skelTile: { flex: 1, aspectRatio: 1, borderRadius: BorderRadius.lg, backgroundColor: Colors.surfaceMuted },
+  skelLine: { height: 44, borderRadius: BorderRadius.md, backgroundColor: Colors.surfaceMuted },
   content: { paddingTop: Spacing.lg },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xl },
   who: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
